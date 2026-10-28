@@ -56,7 +56,7 @@ pub fn get_fp_type() -> i32 {
             return v;
         }
     }
-    4
+    0
 }
 
 // main runner

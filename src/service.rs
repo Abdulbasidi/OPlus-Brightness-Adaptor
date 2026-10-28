@@ -349,6 +349,6 @@ mod tests {
             service.r#getDisplayPanelFeatureValue(feature::FP_TYPE, &mut values).unwrap(),
             0
         );
-        assert_eq!(values, vec![4]);
+        assert_eq!(values, vec![0]);
     }
 }
