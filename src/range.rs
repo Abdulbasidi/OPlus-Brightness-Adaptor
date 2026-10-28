@@ -6,18 +6,29 @@ use crate::paths::{persist_min, persist_max, sys_prop_min, sys_prop_max};
 
 // brightness range struct
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct BrightnessRange { pub(crate) min: i32, pub(crate) max: i32, locked: bool }
+pub struct BrightnessRange {
+    pub min: i32,
+    pub max: i32,
+    locked: bool,
+}
+
 impl BrightnessRange {
-    pub(crate) fn init() -> Self {
+    pub fn new(min: i32, max: i32) -> Self {
+        Self { min, max, locked: false }
+    }
+
+    pub fn init() -> Self {
         let s = match (get_prop_int(persist_min()), get_prop_int(persist_max())) {
             (Some(a), Some(b)) if a < b => Self { min: a, max: b, locked: false },
             _ => Self { min: FALLBACK_MIN, max: FALLBACK_MAX, locked: false },
         };
-        if dbg_on() { log_d(&format!("[BrightnessRange] Initialized with range: min={}, max={}", s.min, s.max)); }
+        if dbg_on() {
+            log_d(&format!("[BrightnessRange] Initialized with range: min={}, max={}", s.min, s.max));
+        }
         s
     }
 
-    pub(crate) fn refresh_range(&mut self) {
+    pub fn refresh_range(&mut self) {
         if self.locked { return; }
         let pmin = get_prop_int(persist_min());
         let pmax = get_prop_int(persist_max());

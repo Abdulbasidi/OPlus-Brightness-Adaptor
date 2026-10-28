@@ -1,10 +1,16 @@
 [package]
 name = "oplusbright"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+rsbinder = { version = "0.12", features = ["android_14_plus"] }
+async-trait = "0.1"
 libc = "0.2"
+log = "0.4"
+
+[build-dependencies]
+rsbinder-aidl = "=0.12"
 
 [lib]
 name = "oplusbright"

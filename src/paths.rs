@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 // file paths & property keys
 pub(crate) fn min_bright_path() -> &'static str { "/sys/class/leds/lcd-backlight/min_brightness" }
 pub(crate) fn max_bright_path() -> &'static str { "/sys/class/leds/lcd-backlight/max_hw_brightness" }

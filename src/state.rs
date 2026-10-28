@@ -1,36 +1,115 @@
-use crate::properties::get_prop;
-use crate::range::BrightnessRange;
-use crate::constants::FALLBACK_MIN;
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
-// brightness property getter
-pub(crate) fn get_prop_brightness(range: &BrightnessRange, is_float: bool) -> i32 {
-    if is_float {
-        if let Some(val_str) = get_prop("debug.tracing.screen_brightness") {
-            if let Ok(f) = val_str.parse::<f32>() {
-                if f == 0.0 { return -1; } // skip
-                let f = f.clamp(0.0, 1.0);
-                return (range.min as f32 + f * (range.max - range.min) as f32).round() as i32;
-            }
+use crate::constants::{feature_to_filename, ADDON_DIR};
+use crate::logging::log_e;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Value {
+    Int(i32),
+    Ints(Vec<i32>),
+    Strings(Vec<String>),
+}
+
+impl Value {
+    pub fn as_int(&self) -> Option<i32> {
+        match self {
+            Value::Int(v) => Some(*v),
+            Value::Ints(v) => v.first().copied(),
+            Value::Strings(_) => None,
         }
-        FALLBACK_MIN
-    } else {
-        let val = get_prop("debug.tracing.screen_brightness")
-            .and_then(|v| v.split('.').next()?.parse::<i32>().ok());
-        match val {
-            Some(0) => -1, // if val is 0, return -1 to skip write
-            Some(v) => v,
-            None => FALLBACK_MIN
+    }
+
+    pub fn as_ints(&self) -> Vec<i32> {
+        match self {
+            Value::Int(v) => vec![*v],
+            Value::Ints(v) => v.clone(),
+            Value::Strings(_) => Vec::new(),
         }
     }
 }
 
-// screen state getter
-pub(crate) fn get_screen_state() -> i32 {
-    // screen_state values from debug.tracing.screen_state:
-    // 0: OFF
-    // 1: OFF (AOD)
-    // 2: ON
-    // 3: DOZE (AOD)
-    // 4: DOZE_SUSPEND (AOD DIMMED)
-    get_prop("debug.tracing.screen_state").and_then(|v| v.parse::<i32>().ok()).unwrap_or(2)
+pub struct FeatureStore {
+    root: PathBuf,
+    cache: RwLock<HashMap<(i32, i32), Value>>,
+}
+
+impl FeatureStore {
+    pub fn new<P: AsRef<Path>>(root: P) -> Self {
+        Self {
+            root: root.as_ref().to_path_buf(),
+            cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub fn get(&self, display: i32, feature: i32) -> Option<Value> {
+        if let Ok(c) = self.cache.read() {
+            if let Some(val) = c.get(&(display, feature)) {
+                return Some(val.clone());
+            }
+        }
+
+        let fname = feature_to_filename(feature)?;
+        let path = self.root.join(fname);
+        let contents = fs::read_to_string(&path).ok()?;
+        let trimmed = contents.trim();
+
+        if let Ok(num) = trimmed.parse::<i32>() {
+            let val = Value::Int(num);
+            if let Ok(mut c) = self.cache.write() {
+                c.insert((display, feature), val.clone());
+            }
+            Some(val)
+        } else {
+            let val = Value::Strings(vec![trimmed.to_string()]);
+            Some(val)
+        }
+    }
+
+    pub fn set(&self, display: i32, feature: i32, value: &Value) -> bool {
+        if let Ok(mut c) = self.cache.write() {
+            c.insert((display, feature), value.clone());
+        }
+
+        if let Some(fname) = feature_to_filename(feature) {
+            let path = self.root.join(fname);
+            let s = match value {
+                Value::Int(v) => v.to_string(),
+                Value::Ints(v) => {
+                    v.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(" ")
+                }
+                Value::Strings(v) => v.join("\n"),
+            };
+            if let Err(e) = fs::write(&path, s.as_bytes()) {
+                log_e(&format!("[FeatureStore] write {} failed: {}", path.display(), e));
+            }
+        }
+        true
+    }
+
+    pub fn info(&self, _display: i32, feature: i32) -> Option<Vec<String>> {
+        let fname = feature_to_filename(feature)?;
+        let path = self.root.join(fname);
+        let contents = fs::read_to_string(&path).ok()?;
+        Some(contents.lines().map(|s| s.trim().to_string()).collect())
+    }
+}
+
+impl Default for FeatureStore {
+    fn default() -> Self {
+        Self::new(ADDON_DIR)
+    }
+}
+
+pub fn ensure_addon_dir() {
+    let p = Path::new(ADDON_DIR);
+    if !p.exists() {
+        let _ = fs::create_dir_all(p);
+    }
+    unsafe {
+        let c_path = std::ffi::CString::new(ADDON_DIR).unwrap();
+        libc::chmod(c_path.as_ptr(), 0o777);
+    }
 }

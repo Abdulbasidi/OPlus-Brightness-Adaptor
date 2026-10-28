@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::process::Command;
 use crate::logging::{log_d, log_e};
 use crate::properties::{get_prop_int, set_prop};
