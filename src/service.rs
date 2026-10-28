@@ -8,7 +8,7 @@ use crate::constants::{
 };
 use crate::light::Lights;
 use crate::logging::log_d;
-use crate::modes::{dbg_on, get_brightness_mode};
+use crate::modes::{dbg_on, get_brightness_mode, get_fp_type};
 use crate::panel_bindings::vendor::oplus::hardware::displaypanelfeature::IDisplayPanelFeature::{
     BnDisplayPanelFeature, IDisplayPanelFeature,
 };
@@ -150,6 +150,25 @@ impl IDisplayPanelFeature for PanelService {
             let mut produced = vec![0; PANEL_ID_SLOTS];
             produced.resize(slots, 0);
             *feature_values = produced;
+            return Ok(0);
+        }
+
+        if feature == feature::FP_TYPE {
+            let fp_type = self
+                .inner
+                .store
+                .get(display, feature)
+                .and_then(|v| v.as_int())
+                .unwrap_or_else(get_fp_type);
+            if dbg {
+                log_d(&format!(
+                    "[PanelService] getDisplayPanelFeatureValue(FP_TYPE): 0x{:x}",
+                    fp_type
+                ));
+            }
+            let mut values = vec![fp_type];
+            values.resize(slots.max(1), 0);
+            *feature_values = values;
             return Ok(0);
         }
 
@@ -318,5 +337,18 @@ mod tests {
         assert_eq!(scale_brightness_curved(8191, 1, 511, 222, 8191), 511);
         let mid = scale_brightness_curved(4000, 1, 511, 222, 8191);
         assert!(mid > 80 && mid < 120);
+    }
+
+    #[test]
+    fn get_fp_type_returns_disable_dimlayer() {
+        let range = Arc::new(RwLock::new(BrightnessRange::new(222, 8191)));
+        let (service, _inner) = PanelService::new(1, 511, range, None);
+
+        let mut values = vec![0i32; 1];
+        assert_eq!(
+            service.r#getDisplayPanelFeatureValue(feature::FP_TYPE, &mut values).unwrap(),
+            0
+        );
+        assert_eq!(values, vec![4]);
     }
 }

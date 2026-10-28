@@ -42,6 +42,23 @@ pub fn get_brightness_mode() -> i32 {
     get_prop_int(persist_bright_mode_prop()).unwrap_or(0)
 }
 
+pub fn get_fp_type() -> i32 {
+    if let Some(val_str) = get_prop(crate::paths::persist_fp_type())
+        .or_else(|| get_prop("ro.vendor.display.fp_type"))
+    {
+        let trimmed = val_str.trim();
+        if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+            if let Ok(v) = i32::from_str_radix(hex, 16) {
+                return v;
+            }
+        }
+        if let Ok(v) = trimmed.parse::<i32>() {
+            return v;
+        }
+    }
+    4
+}
+
 // main runner
 pub fn run() {
     let dbg = dbg_on();
