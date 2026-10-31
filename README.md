@@ -32,9 +32,7 @@ To restore brightness control without patching framework JAR files or replacing 
 
 ## Important Notes
 
-- Do not delete stock Transsion light HALs. Run this service alongside them.
-- No system JAR files (`services.jar`, `framework.jar`) require patching.
-- Direct sysfs write is primary. Light HAL is a fallback only.
+- Do not delete stock light HALs. Run this service alongside them.
 
 ---
 
@@ -111,14 +109,14 @@ ro.transsion.physical.backlight.optimization=1
 
 ### Core Properties
 
-| Property | Type | Default | Description |
-|---|---|---|---|
-| `persist.sys.rianixia.brightness.mode` | Int | `0` | Scaling algorithm: `0` = Curved (Gamma 2.2), `1` = Linear, `2` = Custom (75% in = 255 out) |
-| `persist.sys.rianixia.oplus.lux_aod` | Bool | `false` | Enables Lux AOD handling. Prevents 0-brightness writes during Doze State 3. |
-| `persist.sys.rianixia.display.fp_type` | Int | `4` | Overrides `FP_TYPE` (feature `0xd3`). Value `4` disables `OnScreenFingerprintDimLayer`. |
-| `ro.vendor.display.fp_type` | Int | `4` | Read-only vendor default for `FP_TYPE`. Takes precedence over stale persist properties. |
+| Property                                  | Type | Default | Description                                                                                    |
+| ----------------------------------------- | ---- | ------- | ---------------------------------------------------------------------------------------------- |
+| `persist.sys.rianixia.brightness.mode`    | Int  | `0`     | Scaling algorithm: `0` = Curved (Gamma 2.2), `1` = Linear, `2` = Custom (75% in = 255 out)     |
+| `persist.sys.rianixia.oplus.lux_aod`      | Bool | `false` | Enables Lux AOD handling. Prevents 0-brightness writes during Doze State 3.                    |
+| `persist.sys.rianixia.display.fp_type`    | Int  | `4`     | Overrides `FP_TYPE` (feature `0xd3`). Value `4` disables `OnScreenFingerprintDimLayer`.        |
+| `ro.vendor.display.fp_type`               | Int  | `4`     | Read-only vendor default for `FP_TYPE`. Takes precedence over stale persist properties.        |
 | `persist.sys.rianixia.brightness.isfloat` | Bool | `false` | Set to `true` if the ROM writes float brightness strings to `debug.tracing.screen_brightness`. |
-| `persist.sys.rianixia.display-debug` | Bool | `false` | Enables verbose debug logging to logcat (Tag: `Xia-DisplayAdaptor`). |
+| `persist.sys.rianixia.display-debug`      | Bool | `false` | Enables verbose debug logging to logcat (Tag: `Xia-DisplayAdaptor`).                           |
 
 ### Hardware Overrides
 
