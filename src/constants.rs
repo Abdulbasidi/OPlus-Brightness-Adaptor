@@ -13,6 +13,8 @@ pub(crate) const OS14_MIN: i32 = 22; // OS14 min fallback
 
 pub const SERVICE_NAME: &str =
     "vendor.oplus.hardware.displaypanelfeature.IDisplayPanelFeature/default";
+// System property the Oplus framework writes with its computed 11-bit brightness.
+pub const BRIGHTNESS_PROP: &str = "debug.tracing.screen_brightness";
 pub const PANEL_ID_SLOTS: usize = 5;
 pub const ADDON_DIR: &str = "/data/addon/oplus_display";
 

@@ -136,6 +136,22 @@ impl Lights {
         };
         self.set_brightness(backlight.id, brightness).is_ok()
     }
+
+    /// Map a hardware-range brightness onto the Light HAL's 0..=255 domain.
+    ///
+    /// The low end maps to 1, not 0: in the Light HAL 0 means the light is off,
+    /// and the adaptor's hardware minimum is a visible, lit state.
+    pub fn scale_to_hal_range(hw_value: i32, hw_min: i32, hw_max: i32) -> i32 {
+        if hw_value <= 0 {
+            return 0;
+        }
+        if hw_max <= hw_min {
+            return hw_value.clamp(1, 255);
+        }
+        let span = (hw_max - hw_min) as f64;
+        let scaled = (hw_value - hw_min) as f64 / span;
+        (1.0 + scaled * 254.0).round().clamp(1.0, 255.0) as i32
+    }
 }
 
 /// Read the backlight's hardware maximum brightness from sysfs.

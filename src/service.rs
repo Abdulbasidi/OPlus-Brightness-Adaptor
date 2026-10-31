@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use rsbinder::{BinderResult, Interface, SIBinder, Strong};
@@ -7,7 +7,7 @@ use crate::constants::{
     feature, split_feature_id, BRIGHTNESS_OFF, PANEL_ID_SLOTS, SERVICE_NAME,
 };
 use crate::light::Lights;
-use crate::logging::log_d;
+use crate::logging::{log_d, log_e};
 use crate::modes::{dbg_on, get_brightness_mode, get_fp_type};
 use crate::panel_bindings::vendor::oplus::hardware::displaypanelfeature::IDisplayPanelFeature::{
     BnDisplayPanelFeature, IDisplayPanelFeature,
@@ -26,15 +26,25 @@ pub struct Inner {
     pub range: Arc<RwLock<BrightnessRange>>,
     pub last_hw_val: Mutex<i32>,
     pub last_raw_val: AtomicI32,
+    pub has_brightness: AtomicBool,
     pub screen_state: AtomicI32,
     pub sysfs_fd: Option<i32>,
     pub lights: Arc<OnceLock<Lights>>,
 }
 
 impl Inner {
+    fn write_sysfs(&self, target_hw: i32, dbg: bool) {
+        if let Some(fd) = self.sysfs_fd {
+            if let Ok(mut last) = self.last_hw_val.lock() {
+                write_brightness(fd, target_hw, &mut last, dbg);
+            }
+        }
+    }
+
     pub fn apply_brightness(&self, raw: i32) {
         let dbg = dbg_on();
         self.last_raw_val.store(raw, Ordering::SeqCst);
+        self.has_brightness.store(true, Ordering::SeqCst);
 
         let target_hw = if raw <= 0 {
             BRIGHTNESS_OFF
@@ -55,15 +65,20 @@ impl Inner {
             ));
         }
 
-        if let Some(fd) = self.sysfs_fd {
-            if let Ok(mut last) = self.last_hw_val.lock() {
-                write_brightness(fd, target_hw, &mut last, dbg);
-            }
+        // The panel backlight node is a 1..511 scale (max_hw_brightness=511) and is what the
+        // mediatek panel driver actually reads. The light HAL's backlight id is a 0..255 light, so
+        // it cannot express the upper half of the panel range and is only a fallback.
+        if self.sysfs_fd.is_some() {
+            self.write_sysfs(target_hw, dbg);
         } else if let Some(lights) = self.lights.get() {
-            lights.apply_backlight_brightness(target_hw);
+            let hal_value = Lights::scale_to_hal_range(target_hw, self.hw_min, self.hw_max);
+            if !lights.apply_backlight_brightness(hal_value) {
+                log_e("[PanelService] light HAL write failed and no sysfs node is open");
+            }
         }
 
-        self.store.set(0, feature::O_BRIGHTNESS, &Value::Int(raw));
+        // The Oplus 11-bit brightness is tracked in last_raw_val; the OS14 addon file mirror is
+        // not used on OS15+ and the write is rejected for the service uid.
     }
 }
 
@@ -86,6 +101,7 @@ impl PanelService {
             range,
             last_hw_val: Mutex::new(-1),
             last_raw_val: AtomicI32::new(initial_raw),
+            has_brightness: AtomicBool::new(false),
             screen_state: AtomicI32::new(2), // 2 = ON
             sysfs_fd,
             lights: Arc::new(OnceLock::new()),
@@ -224,20 +240,18 @@ impl IDisplayPanelFeature for PanelService {
                 if dbg {
                     log_d("[PanelService] Screen state transitioned to OFF/BLANK");
                 }
-                if let Some(fd) = self.inner.sysfs_fd {
-                    if let Ok(mut last) = self.inner.last_hw_val.lock() {
-                        write_brightness(fd, BRIGHTNESS_OFF, &mut last, dbg);
-                    }
-                } else if let Some(lights) = self.inner.lights.get() {
-                    let _ = lights.apply_backlight_brightness(0);
-                }
+                // The panel backlight node is the physical sink; the mediatek light HAL's
+                // backlight light is a 0..255 domain and does not drive this panel.
+                self.inner.write_sysfs(BRIGHTNESS_OFF, dbg);
             } else if val == 1 || val == 2 {
                 // Screen on
                 if dbg {
                     log_d("[PanelService] Screen state transitioned to ON");
                 }
                 let raw = self.inner.last_raw_val.load(Ordering::SeqCst);
-                self.inner.apply_brightness(raw);
+                if self.inner.has_brightness.load(Ordering::SeqCst) {
+                    self.inner.apply_brightness(raw);
+                }
             }
             self.inner.store.set(display, feature, &Value::Int(val));
             return Ok(0);

@@ -2,7 +2,7 @@ use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, RwLock};
 
-use crate::constants::SERVICE_NAME;
+use crate::constants::{SERVICE_NAME, BRIGHTNESS_PROP};
 use crate::light::Lights;
 use crate::logging::{log_d, log_e};
 use crate::paths::{
@@ -23,10 +23,6 @@ pub fn dbg_on() -> bool {
 // mode checks
 pub fn is_oplus_panel_mode() -> bool {
     get_prop(is_oplus_panel_prop()).as_deref() == Some("true")
-}
-
-pub fn is_float_mode() -> bool {
-    get_prop("persist.sys.rianixia.brightness.isfloat").as_deref() == Some("true")
 }
 
 pub fn is_ips_mode() -> bool {
@@ -141,12 +137,16 @@ pub fn run() {
         log_d("[DisplayAdaptor] Light HAL unavailable; using direct sysfs control");
     }
 
-    // Property monitor thread to catch SystemUI / Settings slider changes
+    // The Oplus framework publishes its computed 11-bit brightness to this system property
+    // (DisplayPowerController.animateScreenBrightness writes it before the value reaches any
+    // vendor service), and the framework never sends O_BRIGHTNESS over the panel-feature AIDL.
+    // So this property is the only framework-to-vendor brightness channel available without
+    // patching system_server.
     let inner_watcher = Arc::clone(&inner);
     std::thread::spawn(move || {
         let mut last_prop = String::new();
         loop {
-            if let Some(prop_val) = get_prop("debug.tracing.screen_brightness") {
+            if let Some(prop_val) = get_prop(BRIGHTNESS_PROP) {
                 let trimmed = prop_val.trim();
                 if !trimmed.is_empty() && trimmed != last_prop {
                     last_prop = trimmed.to_string();
