@@ -183,13 +183,53 @@ pub fn run() {
             if !trimmed.is_empty() {
                 if let Ok(f) = trimmed.parse::<f32>() {
                     let raw = f.round() as i32;
-                    if raw > 0 && raw != last_raw {
+                    let hw_invalid = inner_watcher
+                        .last_hw_val
+                        .lock()
+                        .map(|v| *v < 0)
+                        .unwrap_or(false);
+                    if raw > 0 && (raw != last_raw || hw_invalid) {
                         last_raw = raw;
                         inner_watcher.apply_brightness(raw);
                     }
                 }
             }
         }
+    });
+
+    // Event-driven kernel futex listener for boot completion.
+    // When sys.boot_completed reaches "1", force fetches and restores the brightness
+    // so the panel is never left in a black screen state after reboot.
+    let inner_boot = Arc::clone(&inner);
+    std::thread::spawn(move || {
+        log_d("[DisplayAdaptor] Starting kernel futex listener for sys.boot_completed");
+
+        let mut pi = find_prop("sys.boot_completed");
+        let mut global_serial = 0u32;
+        while pi.is_none() {
+            if let Some(s) = wait_any_prop(global_serial) {
+                global_serial = s;
+            }
+            pi = find_prop("sys.boot_completed");
+        }
+        let pi = pi.unwrap();
+
+        let mut pv = read_prop_pi(pi);
+        let mut serial = pv.serial;
+        while pv.value.trim() != "1" {
+            if let Some(new_serial) = wait_prop_pi(pi, serial) {
+                serial = new_serial;
+                pv = read_prop_pi(pi);
+            }
+        }
+
+        log_d("[DisplayAdaptor] sys.boot_completed=1 received, forcing brightness restore");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        inner_boot.force_restore_brightness();
+
+        // Follow-up restore after 1.2s to guarantee steady-state brightness after keyguard transition
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        inner_boot.force_restore_brightness();
     });
 
     if let Err(err) = rsbinder::ProcessState::join_thread_pool() {

@@ -79,6 +79,79 @@ impl Inner {
 
         // The Oplus 11-bit brightness is tracked in last_raw_val; the OS14 addon file mirror is
         // not used on OS15+ and the write is rejected for the service uid.
+        // Persist to disk so last known brightness survives reboot
+        if raw > 0 {
+            let _ = std::fs::write("/data/addon/oplus_display/last_brightness", format!("{}\n", raw));
+        }
+    }
+
+    pub fn force_restore_brightness(&self) {
+        let dbg = dbg_on();
+
+        // Invalidate cached hardware brightness so writer does not skip write
+        if let Ok(mut last) = self.last_hw_val.lock() {
+            *last = -1;
+        }
+
+        let mut target_raw = -1;
+
+        // 1. Try reading debug.tracing.screen_brightness
+        if let Some(pi) = crate::properties::find_prop(crate::constants::BRIGHTNESS_PROP) {
+            let pv = crate::properties::read_prop_pi(pi);
+            let trimmed = pv.value.trim();
+            if !trimmed.is_empty() {
+                if let Ok(f) = trimmed.parse::<f32>() {
+                    let val = f.round() as i32;
+                    if val > 0 {
+                        target_raw = val;
+                        if dbg {
+                            log_d(&format!(
+                                "[DisplayAdaptor] Boot restore: fetched from {}: raw={}",
+                                crate::constants::BRIGHTNESS_PROP,
+                                target_raw
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Try persistent file backup
+        if target_raw <= 0 {
+            if let Ok(content) = std::fs::read_to_string("/data/addon/oplus_display/last_brightness") {
+                if let Ok(val) = content.trim().parse::<i32>() {
+                    if val > 0 {
+                        target_raw = val;
+                        if dbg {
+                            log_d(&format!(
+                                "[DisplayAdaptor] Boot restore: fetched from /data/addon/oplus_display/last_brightness: raw={}",
+                                target_raw
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Try in-memory last_raw_val
+        if target_raw <= 0 {
+            let val = self.last_raw_val.load(Ordering::SeqCst);
+            if val > 0 {
+                target_raw = val;
+            }
+        }
+
+        // 4. Default range minimum
+        if target_raw <= 0 {
+            target_raw = self.range.read().map(|r| r.min).unwrap_or(crate::constants::FALLBACK_MIN);
+        }
+
+        log_d(&format!(
+            "[DisplayAdaptor] Restoring brightness on boot completed: raw={}",
+            target_raw
+        ));
+
+        self.apply_brightness(target_raw);
     }
 }
 
@@ -93,7 +166,14 @@ impl PanelService {
         range: Arc<RwLock<BrightnessRange>>,
         sysfs_fd: Option<i32>,
     ) -> (Self, Arc<Inner>) {
-        let initial_raw = range.read().map(|r| r.min).unwrap_or(crate::constants::FALLBACK_MIN);
+        let persisted_raw = std::fs::read_to_string("/data/addon/oplus_display/last_brightness")
+            .ok()
+            .and_then(|s| s.trim().parse::<i32>().ok())
+            .filter(|&v| v > 0);
+        let has_initial = persisted_raw.is_some();
+        let initial_raw = persisted_raw.unwrap_or_else(|| {
+            range.read().map(|r| r.min).unwrap_or(crate::constants::FALLBACK_MIN)
+        });
         let inner = Arc::new(Inner {
             store: FeatureStore::default(),
             hw_min,
@@ -101,7 +181,7 @@ impl PanelService {
             range,
             last_hw_val: Mutex::new(-1),
             last_raw_val: AtomicI32::new(initial_raw),
-            has_brightness: AtomicBool::new(false),
+            has_brightness: AtomicBool::new(has_initial),
             screen_state: AtomicI32::new(2), // 2 = ON
             sysfs_fd,
             lights: Arc::new(OnceLock::new()),
