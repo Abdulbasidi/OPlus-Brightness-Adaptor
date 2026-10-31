@@ -9,7 +9,9 @@ use crate::paths::{
     bright_path, display_type_prop, is_oplus_panel_prop, persist_bright_mode_prop,
     persist_dbg, persist_lux_aod_prop,
 };
-use crate::properties::{get_prop, get_prop_int};
+use crate::properties::{
+    find_prop, get_prop, get_prop_int, read_prop_pi, wait_any_prop, wait_prop_pi,
+};
 use crate::range::BrightnessRange;
 use crate::service::PanelService;
 use crate::state::ensure_addon_dir;
@@ -137,28 +139,56 @@ pub fn run() {
         log_d("[DisplayAdaptor] Light HAL unavailable; using direct sysfs control");
     }
 
-    // The Oplus framework publishes its computed 11-bit brightness to this system property
-    // (DisplayPowerController.animateScreenBrightness writes it before the value reaches any
-    // vendor service), and the framework never sends O_BRIGHTNESS over the panel-feature AIDL.
-    // So this property is the only framework-to-vendor brightness channel available without
-    // patching system_server.
+    // Event-driven kernel futex property watcher.
+    // Replaces 50ms polling loop with Bionic's __system_property_wait futex sleep.
+    // The Oplus framework writes its computed 11-bit brightness to debug.tracing.screen_brightness.
+    // When property_service writes the slot, kernel issues FUTEX_WAKE and wakes this thread instantly.
     let inner_watcher = Arc::clone(&inner);
     std::thread::spawn(move || {
-        let mut last_prop = String::new();
+        log_d("[DisplayAdaptor] Starting kernel futex property event listener for brightness");
+
+        let mut pi = find_prop(BRIGHTNESS_PROP);
+        let mut global_serial = 0u32;
+        while pi.is_none() {
+            if let Some(s) = wait_any_prop(global_serial) {
+                global_serial = s;
+            }
+            pi = find_prop(BRIGHTNESS_PROP);
+        }
+        let pi = pi.unwrap();
+
+        let initial = read_prop_pi(pi);
+        let mut serial = initial.serial;
+        if let Ok(f) = initial.value.trim().parse::<f32>() {
+            let raw = f.round() as i32;
+            if raw > 0 {
+                inner_watcher.apply_brightness(raw);
+            }
+        }
+
+        let mut last_raw = -1;
         loop {
-            if let Some(prop_val) = get_prop(BRIGHTNESS_PROP) {
-                let trimmed = prop_val.trim();
-                if !trimmed.is_empty() && trimmed != last_prop {
-                    last_prop = trimmed.to_string();
-                    if let Ok(f) = trimmed.parse::<f32>() {
-                        let raw = f.round() as i32;
-                        if raw > 0 {
-                            inner_watcher.apply_brightness(raw);
-                        }
+            let new_serial = match wait_prop_pi(pi, serial) {
+                Some(s) => s,
+                None => continue,
+            };
+            serial = new_serial;
+
+            let pv = read_prop_pi(pi);
+            if pv.serial != 0 {
+                serial = pv.serial;
+            }
+
+            let trimmed = pv.value.trim();
+            if !trimmed.is_empty() {
+                if let Ok(f) = trimmed.parse::<f32>() {
+                    let raw = f.round() as i32;
+                    if raw > 0 && raw != last_raw {
+                        last_raw = raw;
+                        inner_watcher.apply_brightness(raw);
                     }
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     });
 
