@@ -2,7 +2,7 @@ use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, RwLock};
 
-use crate::constants::{SERVICE_NAME, BRIGHTNESS_PROP};
+use crate::constants::{BRIGHTNESS_PROP, SCREEN_STATE_PROP, SERVICE_NAME};
 use crate::light::Lights;
 use crate::logging::{log_d, log_e};
 use crate::paths::{
@@ -225,11 +225,63 @@ pub fn run() {
 
         log_d("[DisplayAdaptor] sys.boot_completed=1 received, forcing brightness restore");
         std::thread::sleep(std::time::Duration::from_millis(300));
-        inner_boot.force_restore_brightness();
+        inner_boot.force_restore_brightness("boot_completed_initial");
 
         // Follow-up restore after 1.2s to guarantee steady-state brightness after keyguard transition
         std::thread::sleep(std::time::Duration::from_millis(1200));
-        inner_boot.force_restore_brightness();
+        inner_boot.force_restore_brightness("boot_completed_delayed");
+    });
+
+    // Event-driven kernel futex listener for screen state transitions (Screen ON / OFF / DOZE).
+    // The Oplus DisplayPowerController writes `debug.tracing.screen_state`:
+    // "1" = Screen OFF / Doze
+    // "2" = Screen ON
+    // When the screen wakes back up ("2"), we force restore brightness immediately so the panel
+    // never stays stuck at 0 or dim even if debug.tracing.screen_brightness was unchanged.
+    let inner_state = Arc::clone(&inner);
+    std::thread::spawn(move || {
+        log_d("[DisplayAdaptor] Starting kernel futex listener for screen_state");
+
+        let mut pi = find_prop(SCREEN_STATE_PROP);
+        let mut global_serial = 0u32;
+        while pi.is_none() {
+            if let Some(s) = wait_any_prop(global_serial) {
+                global_serial = s;
+            }
+            pi = find_prop(SCREEN_STATE_PROP);
+        }
+        let pi = pi.unwrap();
+
+        let initial = read_prop_pi(pi);
+        let mut serial = initial.serial;
+        let mut last_state = initial.value.trim().to_string();
+
+        loop {
+            let new_serial = match wait_prop_pi(pi, serial) {
+                Some(s) => s,
+                None => continue,
+            };
+            serial = new_serial;
+
+            let pv = read_prop_pi(pi);
+            if pv.serial != 0 {
+                serial = pv.serial;
+            }
+
+            let state = pv.value.trim();
+            if state != last_state {
+                log_d(&format!(
+                    "[DisplayAdaptor] screen_state transitioned: {} -> {}",
+                    last_state, state
+                ));
+                last_state = state.to_string();
+
+                if state == "2" {
+                    // Screen transitioned to ON
+                    inner_state.force_restore_brightness("screen_wake");
+                }
+            }
+        }
     });
 
     if let Err(err) = rsbinder::ProcessState::join_thread_pool() {

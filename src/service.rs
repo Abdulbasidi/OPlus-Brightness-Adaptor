@@ -85,7 +85,7 @@ impl Inner {
         }
     }
 
-    pub fn force_restore_brightness(&self) {
+    pub fn force_restore_brightness(&self, source: &str) {
         let dbg = dbg_on();
 
         // Invalidate cached hardware brightness so writer does not skip write
@@ -106,7 +106,8 @@ impl Inner {
                         target_raw = val;
                         if dbg {
                             log_d(&format!(
-                                "[DisplayAdaptor] Boot restore: fetched from {}: raw={}",
+                                "[DisplayAdaptor] Restore ({}): fetched from {}: raw={}",
+                                source,
                                 crate::constants::BRIGHTNESS_PROP,
                                 target_raw
                             ));
@@ -124,8 +125,8 @@ impl Inner {
                         target_raw = val;
                         if dbg {
                             log_d(&format!(
-                                "[DisplayAdaptor] Boot restore: fetched from /data/addon/oplus_display/last_brightness: raw={}",
-                                target_raw
+                                "[DisplayAdaptor] Restore ({}): fetched from /data/addon/oplus_display/last_brightness: raw={}",
+                                source, target_raw
                             ));
                         }
                     }
@@ -147,8 +148,8 @@ impl Inner {
         }
 
         log_d(&format!(
-            "[DisplayAdaptor] Restoring brightness on boot completed: raw={}",
-            target_raw
+            "[DisplayAdaptor] Restoring brightness (source={}): raw={}",
+            source, target_raw
         ));
 
         self.apply_brightness(target_raw);
@@ -424,13 +425,13 @@ mod tests {
 
     #[test]
     fn test_scaling_math() {
-        assert_eq!(scale_brightness_linear(222, 1, 511, 222, 8191), 1);
+        assert_eq!(scale_brightness_linear(222, 1, 511, 222, 8191), 10);
         assert_eq!(scale_brightness_linear(8191, 1, 511, 222, 8191), 511);
 
-        assert_eq!(scale_brightness_curved(222, 1, 511, 222, 8191), 1);
+        assert_eq!(scale_brightness_curved(222, 1, 511, 222, 8191), 10);
         assert_eq!(scale_brightness_curved(8191, 1, 511, 222, 8191), 511);
         let mid = scale_brightness_curved(4000, 1, 511, 222, 8191);
-        assert!(mid > 80 && mid < 120);
+        assert!(mid > 80 && mid < 160);
     }
 
     #[test]

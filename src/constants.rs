@@ -15,6 +15,8 @@ pub const SERVICE_NAME: &str =
     "vendor.oplus.hardware.displaypanelfeature.IDisplayPanelFeature/default";
 // System property the Oplus framework writes with its computed 11-bit brightness.
 pub const BRIGHTNESS_PROP: &str = "debug.tracing.screen_brightness";
+// System property the Oplus framework writes with screen power state (1=OFF/DOZE, 2=ON).
+pub const SCREEN_STATE_PROP: &str = "debug.tracing.screen_state";
 pub const PANEL_ID_SLOTS: usize = 5;
 pub const ADDON_DIR: &str = "/data/addon/oplus_display";
 
