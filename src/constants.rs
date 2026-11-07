@@ -2,14 +2,13 @@
 
 use std::os::raw::c_int;
 
-// global constants
-pub(crate) const LOG_DEBUG: c_int = 3; // android log prio d
-pub(crate) const LOG_ERROR: c_int = 6; // android log prio e
-pub(crate) const FALLBACK_MAX: i32 = 8191; // fallback if max is null
-pub(crate) const FALLBACK_MIN: i32 = 222; // fallback if min is null
-pub(crate) const BRIGHTNESS_OFF: i32 = 0; // SCREEN OFF
-pub(crate) const OS14_MAX: i32 = 5118; // OS14 max fallback
-pub(crate) const OS14_MIN: i32 = 22; // OS14 min fallback
+pub(crate) const LOG_DEBUG: c_int = 3;
+pub(crate) const LOG_ERROR: c_int = 6;
+pub(crate) const FALLBACK_MAX: i32 = 8191;
+pub(crate) const FALLBACK_MIN: i32 = 222;
+pub(crate) const BRIGHTNESS_OFF: i32 = 0;
+pub(crate) const OS14_MAX: i32 = 5118;
+pub(crate) const OS14_MIN: i32 = 22;
 
 /// Floor for the hardware brightness the panel is driven to.
 ///
@@ -40,7 +39,6 @@ pub(crate) const STATE_CHANGE_LEVEL: i32 = 10;
 /// makes them two separate commands.
 pub(crate) const STATE_CHANGE_DELAY_MS: u64 = 30;
 
-// Screen states reported by `debug.tracing.screen_state`.
 pub const SCREEN_STATE_OFF: i32 = 0;
 pub const SCREEN_STATE_OFF_AOD: i32 = 1;
 pub const SCREEN_STATE_ON: i32 = 2;

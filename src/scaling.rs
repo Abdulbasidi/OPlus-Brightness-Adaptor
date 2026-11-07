@@ -1,22 +1,9 @@
-// scaling functions
-
 use crate::constants::MIN_VISIBLE_HW;
 
-/// Automatically determine the perceptual gamma curve based on the hardware dynamic range.
+/// Calculates perceptual gamma exponent based on panel dynamic range.
 ///
-/// SurfaceFlinger receives a perceptual float `s0` from the framework DisplayPowerController
-/// that is already calibrated for standard 8-bit / 9-bit displays (hw_max <= 511).
-/// Therefore, for hw_max <= 511, gamma must be 1.0 (pure linear passthrough) to avoid
-/// double-gamma compounding which makes the 511 panel way too dim.
-///
-/// For displays with higher dynamic range (hw_max > 511, e.g. 1023, 2047, 4096),
-/// dynamic range expansion causes the framework's float to ramp up too quickly,
-/// blowing out the mid-range at 30-40%. We smoothly increase gamma above 1.0
-/// proportionally with panel bit-depth:
-///   hw_max <= 511 (9-bit): gamma = 1.00
-///   hw_max = 1023 (10-bit): gamma = 1.17
-///   hw_max = 2047 (11-bit): gamma = 1.34
-///   hw_max = 4096 (12-bit): gamma = 1.51
+/// Disables secondary compounding (gamma 1.0) on standard 511-step panels.
+/// Increases gamma up to 1.51 on wide-gamut 4096-step panels to avoid mid-range blowout.
 pub fn compute_dynamic_gamma(hw_max: i32) -> f32 {
     let bits = (hw_max.max(1) as f32).log2();
     if bits <= 9.0 {

@@ -2,7 +2,6 @@ use crate::constants::{FALLBACK_MIN, FALLBACK_MAX};
 use crate::logging::log_d;
 use crate::modes::dbg_on;
 
-// brightness range struct
 #[derive(Clone, Copy, Debug)]
 pub struct BrightnessRange {
     pub min: i32,

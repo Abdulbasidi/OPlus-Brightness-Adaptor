@@ -5,7 +5,6 @@ use std::os::raw::c_int;
 use crate::paths::log_tag;
 use crate::constants::{LOG_DEBUG, LOG_ERROR};
 
-// logging utilities
 #[cfg(target_os = "android")]
 pub(crate) fn log_write(level: c_int, msg: &str) {
     let tag = CString::new(log_tag()).unwrap();

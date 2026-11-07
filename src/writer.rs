@@ -1,7 +1,6 @@
 use std::io;
 use crate::logging::{log_d, log_e};
 
-// brightness write function for sysfs
 pub(crate) fn write_brightness(fd: i32, val: i32, last_val: &mut i32, dbg: bool) {
     if *last_val == val {
         return;
