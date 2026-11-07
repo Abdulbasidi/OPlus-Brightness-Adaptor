@@ -42,7 +42,8 @@ jobs:
         mkdir -p .cargo
         cat > .cargo/config.toml <<EOF
         [target.aarch64-linux-android]
-        linker = "${{ github.workspace }}/.android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+        linker = "${{ github.workspace }}/.android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+        rustflags = ["-C", "link-arg=--sysroot=${{ github.workspace }}/.android-ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot", "-C", "link-arg=-llog"]
         EOF
 
     - name: Build release for Android
