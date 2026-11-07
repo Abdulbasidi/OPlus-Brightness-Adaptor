@@ -3,7 +3,7 @@
 use std::process::Command;
 use crate::logging::{log_d, log_e};
 use crate::properties::{get_prop_int, set_prop};
-use crate::paths::{persist_custom_devmax_prop, persist_custom_devmin_prop, max_bright_path, min_bright_path, persist_hw_min, persist_hw_max};
+use crate::paths::{persist_custom_devmax_prop, persist_custom_devmin_prop, max_bright_path, max_bright_fallback_path, min_bright_path, persist_hw_min, persist_hw_max};
 
 // panoramic aod check
 pub(crate) fn is_panoramic_aod_enabled(dbg: bool) -> bool {
@@ -54,22 +54,25 @@ pub(crate) fn get_max_brightness(dbg: bool) -> i32 {
         }
     }
     
+    // Some MTK vendor trees expose max_hw_brightness, others (ruby/MT6877)
+    // only have the standard LED core attribute max_brightness.
+    let detected = read_file_int(max_bright_path())
+        .filter(|v| *v > 0)
+        .or_else(|| read_file_int(max_bright_fallback_path()).filter(|v| *v > 0));
+
+    if let Some(val) = detected {
+        if dbg { log_d(&format!("[DisplayAdaptor] Detected hw_max: {}. Saving to prop.", val)); }
+        set_prop(persist_hw_max(), &val.to_string());
+        return val;
+    }
+
     if let Some(cached_max) = get_prop_int(persist_hw_max()) {
         if dbg { log_d(&format!("[DisplayAdaptor] Using cached hw_max: {}", cached_max)); }
         return cached_max;
     }
 
-    match read_file_int(max_bright_path()) {
-        Some(val) => {
-            if dbg { log_d(&format!("[DisplayAdaptor] Detected hw_max: {}. Saving to prop.", val)); }
-            set_prop(persist_hw_max(), &val.to_string());
-            val
-        },
-        None => {
-            if dbg { log_d("[DisplayAdaptor] Failed to detect hw_max, using default 511"); }
-            511
-        }
-    }
+    if dbg { log_d("[DisplayAdaptor] Failed to detect hw_max, using default 511"); }
+    511
 }
 
 pub(crate) fn get_min_brightness(dbg: bool) -> i32 {
