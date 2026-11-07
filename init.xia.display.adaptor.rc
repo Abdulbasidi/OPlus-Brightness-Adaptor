@@ -5,9 +5,3 @@ service xia.display.adaptor /vendor/bin/hw/vendor.xia.display.adaptor-V6@2.0-ser
     capabilities SYS_PTRACE DAC_OVERRIDE
     interface aidl vendor.oplus.hardware.displaypanelfeature.IDisplayPanelFeature/default
     restart_period 5000
-
-on post-fs-data
-    mkdir /data/addon 0777 system system
-    mkdir /data/addon/oplus_display 0777 system system
-    chown system system /data/addon/oplus_display
-    chmod 0777 /data/addon/oplus_display

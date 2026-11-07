@@ -5,8 +5,7 @@ pub(crate) fn min_bright_path() -> &'static str { "/sys/class/leds/lcd-backlight
 pub(crate) fn max_bright_path() -> &'static str { "/sys/class/leds/lcd-backlight/max_hw_brightness" }
 pub(crate) fn bright_path() -> &'static str { "/sys/class/leds/lcd-backlight/brightness" }
 pub(crate) fn log_tag() -> &'static str { "Xia-DisplayAdaptor" }
-pub(crate) fn persist_dbg() -> &'static str { "persist.sys.rianixia.display-debug" } // set true for debug logs
-pub(crate) fn oplus_bright_path() -> &'static str { "/data/addon/oplus_display/oplus_brightness" }
+pub(crate) fn persist_dbg() -> &'static str { "persist.sys.rianixia.display-debug" }
 pub(crate) fn persist_custom_devmax_prop() -> &'static str { "persist.sys.rianixia.custom.devmax.brightness" }
 pub(crate) fn persist_custom_devmin_prop() -> &'static str { "persist.sys.rianixia.custom.devmin.brightness" }
 pub(crate) fn persist_hw_min() -> &'static str { "persist.sys.rianixia.hw_min" } 
