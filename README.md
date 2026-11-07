@@ -80,4 +80,20 @@ The adaptor automatically reads `/sys/class/leds/lcd-backlight/max_brightness` a
 - **Standard Panels (`hw_max <= 511`, 8-bit / 9-bit):** $\gamma = 1.00$ (linear passthrough). Prevents double-gamma compounding with Android framework's built-in perceptual curve so the screen does not appear dim indoors.
 - **Wide Dynamic Range Panels (`hw_max = 4096`, 12-bit):** $\gamma = 1.51$. Softens mid-range brightness expansion to prevent the 30% to 40% slider blowout.
 
-No property configuration or manual tuning is required.
+No property configuration or manual curve tuning is required.
+
+---
+
+## Configuration & Debugging
+
+All obsolete multibrightness and tracing properties are dropped. Only the runtime debug logging property is retained:
+
+| Property | Default | Values | Description |
+|---|---|---|---|
+| `persist.sys.rianixia.display-debug` | `false` | `true`, `false` | Enables verbose debug logging in Android logcat (`logcat -s DisplayAdaptor`). Disabled by default to minimize log spam. |
+
+To enable debug logs on a running device:
+
+```bash
+adb shell setprop persist.sys.rianixia.display-debug true
+```

@@ -22,5 +22,9 @@ pub(crate) fn log_write(level: c_int, msg: &str) {
     }
 }
 
-pub(crate) fn log_d(msg: &str) { log_write(LOG_DEBUG, msg); }
+pub(crate) fn log_d(msg: &str) {
+    if crate::modes::dbg_on() {
+        log_write(LOG_DEBUG, msg);
+    }
+}
 pub(crate) fn log_e(msg: &str) { log_write(LOG_ERROR, msg); }
