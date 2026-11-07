@@ -70,7 +70,6 @@ jobs:
         cp manifest_rianixia_displaypanelfeature_aidl.xml release/vendor/etc/vintf/manifest/
         cp LICENSE release/
         cp README.md release/
-        cp HOW_IT_WORKS.md release/
 
     - name: Upload Release Folder as Artifact
       uses: actions/upload-artifact@v4
