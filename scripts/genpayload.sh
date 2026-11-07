@@ -62,6 +62,10 @@ PY
     echo "pub const WRESULT: usize = 0x018;"
     echo "/// Offset of the backlight path buffer in the state page."
     echo "pub const PATHBUF: usize = 0x100;"
+    echo "/// Offset of the dynamic perceptual curve LUT (256 f32 entries) in the state page."
+    echo "pub const LUT: usize = 0x200;"
+    echo "/// Size of the LUT in bytes (256 * 4)."
+    echo "pub const LUT_LEN: usize = 256 * 4;"
 } > src/hwc_payload.rs
 
 echo "hwc payload: $size bytes"
@@ -122,6 +126,10 @@ PY
     echo "pub const STRUCT_OFFSET: usize = 0x02c;"
     echo "/// Offset of the backlight path buffer in the state page."
     echo "pub const PATHBUF: usize = 0x100;"
+    echo "/// Offset of the dynamic perceptual curve LUT (256 f32 entries) in the state page."
+    echo "pub const LUT: usize = 0x200;"
+    echo "/// Size of the LUT in bytes (256 * 4)."
+    echo "pub const LUT_LEN: usize = 256 * 4;"
 } > src/gui_payload.rs
 
 echo "gui payload: $gui_size bytes"

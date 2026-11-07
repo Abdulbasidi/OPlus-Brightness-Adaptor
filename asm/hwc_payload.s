@@ -64,10 +64,32 @@ stubB:
     fmov    s2, #0.0                // 0.0f
     fcmp    s0, s0                  // NaN check
     b.vs    .LbadB
+    str     s0, [x4, #0x030]        // record raw input float for diagnostic
     fcmp    s0, s1                  // > 1.0f
     b.gt    .LbadB
     fcmp    s0, s2                  // <= 0.0f means off
     b.le    .Lzero
+
+    // Apply perceptual curve from precomputed LUT at state_page + 0x200
+    ldr     s2, [x4, #0x014]        // 255.0f
+    fmul    s2, s0, s2              // x = s0 * 255.0f
+    fcvtzs  w13, s2                 // i = floor(x)
+    cmp     w13, #255
+    b.ge    .LlutMax
+    scvtf   s3, w13                 // (float)i
+    fsub    s3, s2, s3              // frac = x - (float)i
+    add     x14, x4, #0x200         // &lut[0]
+    ldr     s4, [x14, w13, uxtw #2] // y0 = lut[i]
+    add     w15, w13, #1
+    ldr     s5, [x14, w15, uxtw #2] // y1 = lut[i+1]
+    fsub    s5, s5, s4              // y1 - y0
+    fmadd   s0, s3, s5, s4          // s0 = y0 + frac * (y1 - y0)
+    b       .Lscale
+
+.LlutMax:
+    fmov    s0, #1.0
+
+.Lscale:
     ldr     w10, [x4, #0x004]       // min_bri
     ldr     w11, [x4, #0x008]       // max_bri
     sub     w12, w11, w10

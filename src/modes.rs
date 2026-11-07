@@ -4,11 +4,8 @@ use std::sync::{Arc, RwLock};
 
 use crate::constants::SERVICE_NAME;
 use crate::logging::{log_d, log_e};
-use crate::paths::{
-    bright_path, display_type_prop, is_oplus_panel_prop, persist_bright_mode_prop,
-    persist_dbg, persist_lux_aod_prop,
-};
-use crate::properties::{get_prop, get_prop_int};
+use crate::paths::{bright_path, persist_dbg};
+use crate::properties::get_prop;
 use crate::range::BrightnessRange;
 use crate::service::PanelService;
 use crate::state::ensure_addon_dir;
@@ -17,24 +14,6 @@ use crate::utils::{get_max_brightness, get_min_brightness};
 // debug check
 pub fn dbg_on() -> bool {
     get_prop(persist_dbg()).as_deref() == Some("true")
-}
-
-// mode checks
-pub fn is_oplus_panel_mode() -> bool {
-    get_prop(is_oplus_panel_prop()).as_deref() == Some("true")
-}
-
-pub fn is_ips_mode() -> bool {
-    get_prop(display_type_prop()).as_deref() == Some("IPS")
-}
-
-pub fn is_lux_aod_mode() -> bool {
-    get_prop(persist_lux_aod_prop()).as_deref() == Some("true")
-}
-
-// 0 = Curved, 1 = Linear, 2 = Custom
-pub fn get_brightness_mode() -> i32 {
-    get_prop_int(persist_bright_mode_prop()).unwrap_or(0)
 }
 
 // main runner

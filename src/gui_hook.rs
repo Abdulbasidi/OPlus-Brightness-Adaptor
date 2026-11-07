@@ -2,16 +2,17 @@ use std::io;
 
 use crate::elf::{Elf, Symbol};
 use crate::gui_payload::{
-    ABI_MODE, COUNTA, COUNTB, DPTR, FLOATS, PATHBUF, PAYLOAD, STATE, STATE_LEN, STRUCT_OFFSET,
-    STUB_SET, STUB_SUPPORT, SUPPORT_ABI, WRESULT,
+    ABI_MODE, COUNTA, COUNTB, DPTR, FLOATS, LUT, LUT_LEN, PATHBUF, PAYLOAD, STATE, STATE_LEN,
+    STRUCT_OFFSET, STUB_SET, STUB_SUPPORT, SUPPORT_ABI, WRESULT,
 };
 use crate::hwc_hook::{
     discover_backlight, encode_branch, find_free_holes, find_svc_gadget, poke_bytes, poke32,
-    peek32, read_maps, remote_syscall, runtime_address, seize_and_stop, Backlight, InstallReport,
+    peek32, peek64, read_maps, remote_syscall, runtime_address, seize_and_stop, Backlight, InstallReport,
     MapLine, AT_FDCWD, B_OPCODE, B_RANGE, MAP_PRIVATE, MAP_PRIVATE_ANON, NR_MMAP, NR_MUNMAP,
     NR_OPENAT, O_RDONLY_CLOEXEC, O_WRONLY_CLOEXEC, PAGE_SIZE, PROT_RW, PROT_RX,
 };
 use crate::logging::log_d;
+use crate::scaling::compute_dynamic_gamma;
 
 extern "C" {
     fn ptrace(
@@ -359,11 +360,6 @@ fn map_pages(
     Ok((code_page, state_page))
 }
 
-fn peek64(pid: i32, addr: u64) -> Option<u64> {
-    let lo = peek32(pid, addr)? as u64;
-    let hi = peek32(pid, addr + 4)? as u64;
-    Some(lo | (hi << 32))
-}
 
 fn inject(
     tid: i32,
@@ -373,6 +369,25 @@ fn inject(
 ) -> io::Result<InstallReport> {
     if let Some(code_page) = already_patched(tid, target) {
         let state_page = peek64(tid, code_page + DPTR as u64).unwrap_or(0);
+        if state_page != 0 {
+            let _ = poke_bytes(tid, code_page, PAYLOAD);
+            let _ = poke_bytes(tid, code_page + DPTR as u64, &state_page.to_le_bytes());
+
+            let mut floats = [0u8; 8];
+            floats[0..4].copy_from_slice(&1.0f32.to_le_bytes());
+            floats[4..8].copy_from_slice(&255.0f32.to_le_bytes());
+            let _ = poke_bytes(tid, state_page + FLOATS as u64, &floats);
+
+            let gamma = compute_dynamic_gamma(backlight.max);
+            let mut lut = [0u8; LUT_LEN];
+            for i in 0..256 {
+                let ratio = i as f32 / 255.0;
+                let curved = ratio.powf(gamma);
+                lut[i * 4..(i + 1) * 4].copy_from_slice(&curved.to_le_bytes());
+            }
+            let _ = poke_bytes(tid, state_page + LUT as u64, &lut);
+        }
+
         let support_calls = peek32(tid, state_page + COUNTA as u64).unwrap_or(0);
         let set_calls = peek32(tid, state_page + COUNTB as u64).unwrap_or(0);
         let last_val = peek32(tid, state_page + 0x0c).unwrap_or(0);
@@ -380,9 +395,10 @@ fn inject(
         let abi_mode = peek32(tid, state_page + ABI_MODE as u64).unwrap_or(0);
         let support_abi = peek32(tid, state_page + SUPPORT_ABI as u64).unwrap_or(0);
         let struct_offset = peek32(tid, state_page + STRUCT_OFFSET as u64).unwrap_or(0x10);
+        let raw_float = f32::from_bits(peek32(tid, state_page + 0x030).unwrap_or(0));
         log_d(&format!(
-            "[GuiHook] system_server already patched (entry {:#x} -> {:#x}, state={:#x}): support_calls={} set_calls={} last_val={} wresult={} (abi_mode={}, support_abi={}, struct_offset={:#x})",
-            target.get_support, code_page, state_page, support_calls, set_calls, last_val, wresult, abi_mode, support_abi, struct_offset
+            "[GuiHook] system_server already patched (entry {:#x} -> {:#x}, state={:#x}): support_calls={} set_calls={} raw_float={:.4} last_val={} wresult={} (abi_mode={}, support_abi={}, struct_offset={:#x})",
+            target.get_support, code_page, state_page, support_calls, set_calls, raw_float, last_val, wresult, abi_mode, support_abi, struct_offset
         ));
         return Ok(InstallReport {
             pid: target.pid,
@@ -445,8 +461,19 @@ fn inject(
     }
     let mut floats = [0u8; 8];
     floats[0..4].copy_from_slice(&1.0f32.to_le_bytes());
-    floats[4..8].copy_from_slice(&0.0f32.to_le_bytes());
+    floats[4..8].copy_from_slice(&255.0f32.to_le_bytes());
     let _ = poke_bytes(tid, state_page + FLOATS as u64, &floats);
+
+    let gamma = compute_dynamic_gamma(backlight.max);
+    let mut lut = [0u8; LUT_LEN];
+    for i in 0..256 {
+        let ratio = i as f32 / 255.0;
+        let curved = ratio.powf(gamma);
+        lut[i * 4..(i + 1) * 4].copy_from_slice(&curved.to_le_bytes());
+    }
+    if !poke_bytes(tid, state_page + LUT as u64, &lut) {
+        return Err(io::Error::new(io::ErrorKind::Other, "lut write failed"));
+    }
 
     let _ = poke32(tid, state_page + ABI_MODE as u64, target.abi_mode);
     let _ = poke32(tid, state_page + SUPPORT_ABI as u64, target.support_abi);
@@ -513,7 +540,8 @@ pub fn install() -> io::Result<InstallReport> {
 mod tests {
     use super::*;
     use crate::gui_payload::{
-        ABI_MODE, COUNTA, COUNTB, DPTR, PAYLOAD, STRUCT_OFFSET, STUB_SET, STUB_SUPPORT, SUPPORT_ABI,
+        ABI_MODE, COUNTA, COUNTB, DPTR, LUT, LUT_LEN, PAYLOAD, STRUCT_OFFSET, STUB_SET,
+        STUB_SUPPORT, SUPPORT_ABI,
     };
 
     #[test]
@@ -527,6 +555,8 @@ mod tests {
         assert_eq!(ABI_MODE, 0x024);
         assert_eq!(SUPPORT_ABI, 0x028);
         assert_eq!(STRUCT_OFFSET, 0x02c);
+        assert_eq!(LUT, 0x200);
+        assert_eq!(LUT_LEN, 256 * 4);
     }
 
     #[test]

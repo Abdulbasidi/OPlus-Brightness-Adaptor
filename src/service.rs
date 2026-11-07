@@ -7,14 +7,12 @@ use crate::constants::{
     feature, split_feature_id, BRIGHTNESS_OFF, PANEL_ID_SLOTS, SERVICE_NAME,
 };
 use crate::logging::{log_d, log_e};
-use crate::modes::{dbg_on, get_brightness_mode};
+use crate::modes::dbg_on;
 use crate::panel_bindings::vendor::oplus::hardware::displaypanelfeature::IDisplayPanelFeature::{
     BnDisplayPanelFeature, IDisplayPanelFeature,
 };
 use crate::range::BrightnessRange;
-use crate::scaling::{
-    scale_brightness_curved, scale_brightness_custom, scale_brightness_linear,
-};
+use crate::scaling::scale_brightness_curved;
 use crate::state::{FeatureStore, Value};
 use crate::writer::write_brightness;
 
@@ -193,13 +191,8 @@ impl Inner {
         let target_hw = if raw <= 0 {
             BRIGHTNESS_OFF
         } else {
-            let mode = get_brightness_mode();
             let range = *self.range.read().unwrap();
-            match mode {
-                1 => scale_brightness_linear(raw, self.hw_min, self.hw_max, range.min, range.max),
-                2 => scale_brightness_custom(raw, self.hw_min, self.hw_max, range.min, range.max),
-                _ => scale_brightness_curved(raw, self.hw_min, self.hw_max, range.min, range.max),
-            }
+            scale_brightness_curved(raw, self.hw_min, self.hw_max, range.min, range.max)
         };
 
         if dbg {
@@ -556,9 +549,6 @@ mod tests {
 
     #[test]
     fn test_scaling_math() {
-        assert_eq!(scale_brightness_linear(222, 1, 511, 222, 8191), 5);
-        assert_eq!(scale_brightness_linear(8191, 1, 511, 222, 8191), 511);
-
         assert_eq!(scale_brightness_curved(222, 1, 511, 222, 8191), 5);
         assert_eq!(scale_brightness_curved(8191, 1, 511, 222, 8191), 511);
         let mid = scale_brightness_curved(4000, 1, 511, 222, 8191);
@@ -568,11 +558,9 @@ mod tests {
     #[test]
     fn scaling_floor_is_five() {
         // hw_min below the floor is raised to MIN_VISIBLE_HW, never lower.
-        assert_eq!(scale_brightness_linear(222, 1, 511, 222, 8191), 5);
         assert_eq!(scale_brightness_curved(222, 1, 511, 222, 8191), 5);
-        assert_eq!(scale_brightness_custom(222, 1, 511, 222, 8191), 5);
         // a hw_min at or above the floor is left alone
-        assert_eq!(scale_brightness_linear(222, 10, 511, 222, 8191), 10);
+        assert_eq!(scale_brightness_curved(222, 10, 511, 222, 8191), 10);
     }
 
     #[test]

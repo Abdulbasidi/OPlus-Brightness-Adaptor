@@ -29,9 +29,10 @@ use std::os::raw::{c_int, c_long, c_void};
 
 use crate::elf::Elf;
 use crate::hwc_payload::{
-    DPTR, FLOATS, PATHBUF, PAYLOAD, STATE, STATE_LEN, STUB_SET, STUB_SUPPORT,
+    DPTR, FLOATS, LUT, LUT_LEN, PATHBUF, PAYLOAD, STATE, STATE_LEN, STUB_SET, STUB_SUPPORT,
 };
 use crate::logging::{log_d, log_e};
+use crate::scaling::compute_dynamic_gamma;
 
 extern "C" {
     fn ptrace(request: c_int, pid: c_int, addr: *mut c_void, data: *mut c_void) -> c_long;
@@ -337,6 +338,13 @@ pub fn peek32(pid: i32, addr: u64) -> Option<u32> {
     let shift = (addr - aligned) * 8;
     let word = ptrace_peek(pid, aligned)?;
     Some(((word >> shift) & 0xffff_ffff) as u32)
+}
+
+/// Read back a 64-bit value at `addr`.
+pub fn peek64(pid: i32, addr: u64) -> Option<u64> {
+    let lo = peek32(pid, addr)? as u64;
+    let hi = peek32(pid, addr + 4)? as u64;
+    Some(lo | (hi << 32))
 }
 
 /// Write a byte range into the target's memory.
@@ -746,9 +754,29 @@ fn inject(
     backlight: &Backlight,
 ) -> io::Result<InstallReport> {
     if let Some(code_page) = already_patched(tid, composer) {
+        let state_page = peek64(tid, code_page + DPTR as u64).unwrap_or(0);
+        if state_page != 0 {
+            let _ = poke_bytes(tid, code_page, PAYLOAD);
+            let _ = poke_bytes(tid, code_page + DPTR as u64, &state_page.to_le_bytes());
+
+            let mut floats = [0u8; 8];
+            floats[0..4].copy_from_slice(&1.0f32.to_le_bytes());
+            floats[4..8].copy_from_slice(&255.0f32.to_le_bytes());
+            let _ = poke_bytes(tid, state_page + FLOATS as u64, &floats);
+
+            let gamma = compute_dynamic_gamma(backlight.max);
+            let mut lut = [0u8; LUT_LEN];
+            for i in 0..256 {
+                let ratio = i as f32 / 255.0;
+                let curved = ratio.powf(gamma);
+                lut[i * 4..(i + 1) * 4].copy_from_slice(&curved.to_le_bytes());
+            }
+            let _ = poke_bytes(tid, state_page + LUT as u64, &lut);
+        }
+
         log_d(&format!(
-            "[HwcHook] HWC already patched (entry {:#x} -> {:#x})",
-            composer.get_support, code_page
+            "[HwcHook] HWC already patched (entry {:#x} -> {:#x}, state={:#x})",
+            composer.get_support, code_page, state_page
         ));
         return Ok(InstallReport {
             pid: composer.pid,
@@ -818,8 +846,19 @@ fn inject(
     }
     let mut floats = [0u8; 8];
     floats[0..4].copy_from_slice(&1.0f32.to_le_bytes());
-    floats[4..8].copy_from_slice(&0.0f32.to_le_bytes());
+    floats[4..8].copy_from_slice(&255.0f32.to_le_bytes());
     let _ = poke_bytes(tid, state_page + FLOATS as u64, &floats);
+
+    let gamma = compute_dynamic_gamma(backlight.max);
+    let mut lut = [0u8; LUT_LEN];
+    for i in 0..256 {
+        let ratio = i as f32 / 255.0;
+        let curved = ratio.powf(gamma);
+        lut[i * 4..(i + 1) * 4].copy_from_slice(&curved.to_le_bytes());
+    }
+    if !poke_bytes(tid, state_page + LUT as u64, &lut) {
+        return Err(io::Error::new(io::ErrorKind::Other, "lut write failed"));
+    }
 
     // Point the stub at the state page.
     if !poke_bytes(
@@ -953,51 +992,38 @@ mod tests {
         assert_eq!(word(0x208), 0xbd40_1081); // ldr s1, [x4, #0x010]
         assert_eq!(word(0x20c), 0x1e27_03e2); // fmov s2, wzr
         assert_eq!(word(0x210), 0x1e20_2000); // fcmp s0, s0
-        assert_eq!(word(0x214), 0x5400_05a6); // b.vs .LbadB
-        assert_eq!(word(0x218), 0x1e21_2000); // fcmp s0, s1
-        assert_eq!(word(0x21c), 0x5400_056c); // b.gt .LbadB
-        assert_eq!(word(0x220), 0x1e22_2000); // fcmp s0, s2
-        assert_eq!(word(0x224), 0x5400_012d); // b.le .Lzero
-        assert_eq!(word(0x228), 0xb940_048a); // ldr w10, [x4, #0x004]
-        assert_eq!(word(0x22c), 0xb940_088b); // ldr w11, [x4, #0x008]
-        assert_eq!(word(0x230), 0x4b0a_016c); // sub w12, w11, w10
-        assert_eq!(word(0x234), 0x1e22_0181); // scvtf s1, w12
-        assert_eq!(word(0x238), 0x1e21_0801); // fmul s1, s0, s1
-        assert_eq!(word(0x23c), 0x1e38_0029); // fcvtzs w9, s1
-        assert_eq!(word(0x240), 0x0b0a_0129); // add w9, w9, w10
-        assert_eq!(word(0x248), 0x5280_0009); // mov w9, #0
-        assert_eq!(word(0x24c), 0xb940_2086); // ldr w6, [x4, #0x020]
-        assert_eq!(word(0x250), 0x1100_04c6); // add w6, w6, #1
-        assert_eq!(word(0x254), 0xb900_2086); // str w6, [x4, #0x020]
-        assert_eq!(word(0x258), 0xb940_0c8c); // ldr w12, [x4, #0x00c]
-        assert_eq!(word(0x25c), 0x6b0c_013f); // cmp w9, w12
-        assert_eq!(word(0x260), 0x5400_0300); // b.eq .Lok
-        assert_eq!(word(0x264), 0xb900_0c89); // str w9, [x4, #0x00c]
-        assert_eq!(word(0x268), 0xd100_83ee); // sub x14, sp, #32
-        assert_eq!(word(0x26c), 0x9100_41cc); // add x12, x14, #16
-        assert_eq!(word(0x270), 0xaa09_03f0); // mov x16, x9
-        assert_eq!(word(0x274), 0x5280_014d); // mov w13, #10
-        assert_eq!(word(0x278), 0x9acd_0a11); // udiv x17, x16, x13
-        assert_eq!(word(0x27c), 0x9b0d_c232); // msub x18, x17, x13, x16
-        assert_eq!(word(0x280), 0x1100_c252); // add w18, w18, #48
-        assert_eq!(word(0x284), 0xd100_058c); // sub x12, x12, #1
-        assert_eq!(word(0x288), 0x3900_0192); // strb w18, [x12]
-        assert_eq!(word(0x28c), 0xaa11_03f0); // mov x16, x17
-        assert_eq!(word(0x290), 0xb5ff_ff50); // cbnz x16, .Ldigit
-        assert_eq!(word(0x294), 0x9100_41c2); // add x2, x14, #16
-        assert_eq!(word(0x298), 0xcb0c_0042); // sub x2, x2, x12
-        assert_eq!(word(0x29c), 0x8b02_0191); // add x17, x12, x2
-        assert_eq!(word(0x2a0), 0x5280_0152); // mov w18, #10
-        assert_eq!(word(0x2a4), 0x3900_0232); // strb w18, [x17]
-        assert_eq!(word(0x2a8), 0x9100_0442); // add x2, x2, #1
-        assert_eq!(word(0x2ac), 0xb940_0080); // ldr w0, [x4, #0x000]
-        assert_eq!(word(0x2b0), 0xaa0c_03e1); // mov x1, x12
-        assert_eq!(word(0x2b4), 0xd280_0808); // mov x8, #64
-        assert_eq!(word(0x2b8), 0xd400_0001); // svc #0
-        assert_eq!(word(0x2bc), 0xb900_1880); // str w0, [x4, #0x018]
-        assert_eq!(word(0x2c0), 0x5280_0000); // mov w0, #0
-        assert_eq!(word(0x2c8), 0x5280_0080); // mov w0, #4
-        assert_eq!(word(0x2cc), 0xd65f_03c0); // ret
+        assert_eq!(word(0x214), 0x5400_07a6); // b.vs .LbadB
+        assert_eq!(word(0x218), 0xbd00_3080); // str s0, [x4, #0x030]
+        assert_eq!(word(0x21c), 0x1e21_2000); // fcmp s0, s1
+        assert_eq!(word(0x220), 0x5400_074c); // b.gt .LbadB
+        assert_eq!(word(0x224), 0x1e22_2000); // fcmp s0, s2
+        assert_eq!(word(0x228), 0x5400_030d); // b.le .Lzero
+        // Perceptual curve LUT indexing & linear interpolation
+        assert_eq!(word(0x22c), 0xbd40_1482); // ldr s2, [x4, #0x014] (255.0f)
+        assert_eq!(word(0x230), 0x1e22_0802); // fmul s2, s0, s2
+        assert_eq!(word(0x234), 0x1e38_004d); // fcvtzs w13, s2
+        assert_eq!(word(0x238), 0x7103_fdbf); // cmp w13, #255
+        assert_eq!(word(0x23c), 0x5400_014a); // b.ge .LlutMax
+        // Scaling
+        assert_eq!(word(0x268), 0xb940_048a); // ldr w10, [x4, #0x004] (min_bri)
+        assert_eq!(word(0x26c), 0xb940_088b); // ldr w11, [x4, #0x008] (max_bri)
+        assert_eq!(word(0x270), 0x4b0a_016c); // sub w12, w11, w10
+        assert_eq!(word(0x274), 0x1e22_0181); // scvtf s1, w12
+        assert_eq!(word(0x278), 0x1e21_0801); // fmul s1, s0, s1
+        assert_eq!(word(0x27c), 0x1e38_0029); // fcvtzs w9, s1
+        assert_eq!(word(0x280), 0x0b0a_0129); // add w9, w9, w10
+        assert_eq!(word(0x288), 0x5280_0009); // mov w9, #0
+        // Counter & Syscall write
+        assert_eq!(word(0x28c), 0xb940_2086); // ldr w6, [x4, #0x020]
+        assert_eq!(word(0x2ec), 0xb940_0080); // ldr w0, [x4, #0x000]
+        assert_eq!(word(0x2f0), 0xaa0c_03e1); // mov x1, x12
+        assert_eq!(word(0x2f4), 0xd280_0808); // mov x8, #64
+        assert_eq!(word(0x2f8), 0xd400_0001); // svc #0
+        assert_eq!(word(0x2fc), 0xb900_1880); // str w0, [x4, #0x018]
+        assert_eq!(word(0x300), 0x5280_0000); // mov w0, #0
+        assert_eq!(word(0x304), 0xd65f_03c0); // ret
+        assert_eq!(word(0x308), 0x5280_0080); // mov w0, #4
+        assert_eq!(word(0x30c), 0xd65f_03c0); // ret
     }
 
     #[test]
@@ -1037,6 +1063,8 @@ mod tests {
         assert_eq!(FLOATS, 0x010);
         assert_eq!(WRESULT, 0x018);
         assert_eq!(PATHBUF, 0x100);
+        assert_eq!(LUT, 0x200);
+        assert_eq!(LUT_LEN, 256 * 4);
         // led_fd, min_bri, max_bri, last_val.
         assert_eq!(STATE_LEN, 4 * 4);
     }
