@@ -3,7 +3,6 @@ use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, RwLock};
 
 use crate::constants::{BRIGHTNESS_PROP, SCREEN_STATE_PROP, SERVICE_NAME};
-use crate::light::Lights;
 use crate::logging::{log_d, log_e};
 use crate::paths::{
     bright_path, display_type_prop, is_oplus_panel_prop, persist_bright_mode_prop,
@@ -44,23 +43,65 @@ pub fn get_fp_type() -> i32 {
     if let Some(val_str) = get_prop("ro.vendor.display.fp_type")
         .or_else(|| get_prop(crate::paths::persist_fp_type()))
     {
-        let trimmed = val_str.trim();
-        let parsed = if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
-            i32::from_str_radix(hex, 16).ok()
-        } else {
-            trimmed.parse::<i32>().ok()
-        };
-        if let Some(v) = parsed {
-            if v > 0 {
-                return v;
-            }
+        if let Some(v) = parse_fp_type(&val_str) {
+            return v;
         }
     }
-    4
+    crate::constants::FP_TYPE_UNSET
+}
+
+/// Parse an FP_TYPE property value. `-1` (FP_TYPE_UNSET) is accepted so consumers
+/// fall back to the Oplus feature configuration instead of reading a hardcoded type.
+pub fn parse_fp_type(val_str: &str) -> Option<i32> {
+    let trimmed = val_str.trim();
+    let parsed = if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+        i32::from_str_radix(hex, 16).ok()
+    } else {
+        trimmed.parse::<i32>().ok()
+    };
+    parsed.filter(|&v| v > 0 || v == crate::constants::FP_TYPE_UNSET)
 }
 
 // main runner
 pub fn run() {
+    // Diagnostic mode: install the composer hook and exit without registering
+    // the Binder service. Used to verify the injection on a device without
+    // disturbing the running adaptor.
+    if std::env::args().any(|a| a == "--selftest") {
+        match crate::selftest::run() {
+            Ok(r) => log_d(&format!(
+                "[HwcSelftest] page={:#x} state={:#x} support_ret={} support={} set_ret={} set_val={} node_set={} off_ret={} node_off={} write_ret={}",
+                r.page, r.state_page, r.support_result, r.support_flag, r.set_result, r.set_value,
+                r.node_after_set, r.off_result, r.node_after_off, r.write_result
+            )),
+            Err(e) => log_e(&format!("[HwcSelftest] failed: {}", e)),
+        }
+        return;
+    }
+
+    if std::env::args().any(|a| a == "--gui-hook") {
+        match crate::gui_hook::install() {
+            Ok(report) => log_d(&format!(
+                "[GuiHook] installed: pid={} page={:#x} fd={} range={}..{}",
+                report.pid, report.page, report.led_fd, report.min_bri, report.max_bri
+            )),
+            Err(e) => log_e(&format!("[GuiHook] install failed: {}", e)),
+        }
+        return;
+    }
+
+    if std::env::args().any(|a| a == "--hook-only") {
+        let res = crate::gui_hook::install().or_else(|_| crate::hwc_hook::install());
+        match res {
+            Ok(report) => log_d(&format!(
+                "[Hook] installed: pid={} page={:#x} fd={} range={}..{}",
+                report.pid, report.page, report.led_fd, report.min_bri, report.max_bri
+            )),
+            Err(e) => log_e(&format!("[Hook] install failed: {}", e)),
+        }
+        return;
+    }
+
     let dbg = dbg_on();
     log_d("[DisplayAdaptor] Starting vendor.xia.display.adaptor-V6@1.0-service AIDL HAL...");
 
@@ -108,7 +149,6 @@ pub fn run() {
     };
 
     let (service, inner) = PanelService::new(hw_min, hw_max, Arc::clone(&range_arc), file_fd);
-    let light_conn = Arc::clone(&inner.lights);
 
     if let Err(err) = service.register() {
         log_e(&format!(
@@ -119,33 +159,48 @@ pub fn run() {
     }
     log_d(&format!("[DisplayAdaptor] Registered {}", SERVICE_NAME));
 
-    if let Some(lights) = Lights::connect() {
-        if dbg {
-            match lights.lights() {
-                Ok(list) => {
-                    log_d(&format!("[DisplayAdaptor] Light HAL exposes {} lights", list.len()));
-                    if let Some(backlight) = list.iter().find(|l| l.is_backlight()) {
-                        log_d(&format!(
-                            "[DisplayAdaptor] Backlight light id={}, ordinal={}",
-                            backlight.id, backlight.ordinal
-                        ));
-                    }
+    // Install the composer hook once. The composer process is located at
+    // runtime, the two HWC2 entry points are resolved from the library's own
+    // symbol table, and the payload is patched into the composer process. The
+    // patched composer writes the panel node itself, so the adaptor needs no
+    // brightness property, no Light HAL and no background thread at all.
+    std::thread::spawn(move || {
+        // Retry until system_server comes up in late-init.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            let res = crate::gui_hook::install().or_else(|_| crate::hwc_hook::install());
+            match res {
+                Ok(report) => {
+                    log_d(&format!(
+                        "[Hook] installed: pid={} page={:#x} fd={} range={}..{}",
+                        report.pid, report.page, report.led_fd, report.min_bri, report.max_bri
+                    ));
+                    return;
                 }
-                Err(e) => log_e(&format!("[DisplayAdaptor] Light HAL query failed: {:?}", e)),
+                Err(e) => {
+                    if std::time::Instant::now() >= deadline {
+                        log_e(&format!("[Hook] install failed: {}", e));
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
             }
         }
-        let _ = light_conn.set(lights);
-    } else if dbg {
-        log_d("[DisplayAdaptor] Light HAL unavailable; using direct sysfs control");
-    }
+    });
 
-    // Event-driven kernel futex property watcher.
-    // Replaces 50ms polling loop with Bionic's __system_property_wait futex sleep.
-    // The Oplus framework writes its computed 11-bit brightness to debug.tracing.screen_brightness.
-    // When property_service writes the slot, kernel issues FUTEX_WAKE and wakes this thread instantly.
+    // Brightness input. The composer hook is the primary path, but the
+    // framework only produces an HWC2 brightness transaction on ports whose
+    // composer exposes the V2_3+ API. Where it does not (this port declares
+    // 2.1, and the service runs on libhwc2on1adapter), the framework's only
+    // brightness output is this property, so the same value is applied here.
+    // The wait is a futex sleep on the property slot: the thread is woken by
+    // the kernel when the value changes and never polls.
     let inner_watcher = Arc::clone(&inner);
     std::thread::spawn(move || {
-        log_d("[DisplayAdaptor] Starting kernel futex property event listener for brightness");
+        log_d(&format!(
+            "[DisplayAdaptor] Starting futex event listener for {}",
+            BRIGHTNESS_PROP
+        ));
 
         let mut pi = find_prop(BRIGHTNESS_PROP);
         let mut global_serial = 0u32;
@@ -180,18 +235,19 @@ pub fn run() {
             }
 
             let trimmed = pv.value.trim();
-            if !trimmed.is_empty() {
-                if let Ok(f) = trimmed.parse::<f32>() {
-                    let raw = f.round() as i32;
-                    let hw_invalid = inner_watcher
-                        .last_hw_val
-                        .lock()
-                        .map(|v| *v < 0)
-                        .unwrap_or(false);
-                    if raw > 0 && (raw != last_raw || hw_invalid) {
-                        last_raw = raw;
-                        inner_watcher.apply_brightness(raw);
-                    }
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(f) = trimmed.parse::<f32>() {
+                let raw = f.round() as i32;
+                let hw_invalid = inner_watcher
+                    .last_hw_val
+                    .lock()
+                    .map(|v| *v < 0)
+                    .unwrap_or(false);
+                if raw > 0 && (raw != last_raw || hw_invalid) {
+                    last_raw = raw;
+                    inner_watcher.apply_brightness(raw);
                 }
             }
         }
@@ -256,6 +312,13 @@ pub fn run() {
         let mut serial = initial.serial;
         let mut last_state = initial.value.trim().to_string();
 
+        // Apply the state the screen is actually in at startup, so the panel is
+        // not left lit while the screen is off.
+        let initial_state: i32 = last_state
+            .parse()
+            .unwrap_or(crate::constants::SCREEN_STATE_ON);
+        inner_state.apply_screen_state(initial_state, dbg_on());
+
         loop {
             let new_serial = match wait_prop_pi(pi, serial) {
                 Some(s) => s,
@@ -276,10 +339,8 @@ pub fn run() {
                 ));
                 last_state = state.to_string();
 
-                if state == "2" {
-                    // Screen transitioned to ON
-                    inner_state.force_restore_brightness("screen_wake");
-                }
+                let state_val: i32 = state.parse().unwrap_or(crate::constants::SCREEN_STATE_ON);
+                inner_state.apply_screen_state(state_val, dbg_on());
             }
         }
     });
@@ -287,5 +348,30 @@ pub fn run() {
     if let Err(err) = rsbinder::ProcessState::join_thread_pool() {
         log_e(&format!("[DisplayAdaptor] Binder thread pool exited: {:?}", err));
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_fp_type;
+    use crate::constants::FP_TYPE_UNSET;
+
+    #[test]
+    fn fp_type_minus_one_is_accepted() {
+        assert_eq!(parse_fp_type("-1"), Some(FP_TYPE_UNSET));
+        assert_eq!(parse_fp_type(" -1 "), Some(FP_TYPE_UNSET));
+    }
+
+    #[test]
+    fn fp_type_positive_and_hex_are_accepted() {
+        assert_eq!(parse_fp_type("4"), Some(4));
+        assert_eq!(parse_fp_type("0x10"), Some(16));
+    }
+
+    #[test]
+    fn fp_type_zero_and_negative_other_than_unset_are_rejected() {
+        assert_eq!(parse_fp_type("0"), None);
+        assert_eq!(parse_fp_type("-2"), None);
+        assert_eq!(parse_fp_type("abc"), None);
     }
 }

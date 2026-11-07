@@ -1,12 +1,11 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use rsbinder::{BinderResult, Interface, SIBinder, Strong};
 
 use crate::constants::{
     feature, split_feature_id, BRIGHTNESS_OFF, PANEL_ID_SLOTS, SERVICE_NAME,
 };
-use crate::light::Lights;
 use crate::logging::{log_d, log_e};
 use crate::modes::{dbg_on, get_brightness_mode, get_fp_type};
 use crate::panel_bindings::vendor::oplus::hardware::displaypanelfeature::IDisplayPanelFeature::{
@@ -29,7 +28,6 @@ pub struct Inner {
     pub has_brightness: AtomicBool,
     pub screen_state: AtomicI32,
     pub sysfs_fd: Option<i32>,
-    pub lights: Arc<OnceLock<Lights>>,
 }
 
 impl Inner {
@@ -41,10 +39,156 @@ impl Inner {
         }
     }
 
+    /// Write the brightness, bypassing the writer's same-value skip.
+    ///
+    /// The panel re-initialises while it is off, so a write of the value it
+    /// already had is skipped by the kernel's LED core and the panel stays
+    /// dark. Forcing the write makes the driver re-apply the level.
+    fn write_sysfs_forced(&self, target_hw: i32, dbg: bool) {
+        if let Some(fd) = self.sysfs_fd {
+            if let Ok(mut last) = self.last_hw_val.lock() {
+                let prev = *last;
+                *last = -1;
+                write_brightness(fd, target_hw, &mut last, dbg);
+                if *last < 0 {
+                    *last = prev;
+                }
+            }
+        }
+    }
+
+    /// Whether the panel is fully off.
+    ///
+    /// `debug.tracing.screen_state` reports 2 = ON, 3 = DOZE (AOD), 4 =
+    /// DOZE_SUSPEND and 0/1 = OFF. Only 2 means the panel is lit for the user.
+    pub fn is_screen_off(&self) -> bool {
+        let state = self.screen_state.load(Ordering::SeqCst);
+        state == crate::constants::SCREEN_STATE_OFF
+            || state == crate::constants::SCREEN_STATE_OFF_AOD
+    }
+
+    /// The level to write when the panel is being turned off.
+    ///
+    /// The panel driver applies a zero write even while the panel is in its
+    /// AOD mode, and that blanks the AOD image the driver lit itself when the
+    /// doze state was entered. A non-zero write is dropped by the driver in
+    /// that mode instead, so the AOD-capable states are floored at 1.
+    fn off_level(&self) -> i32 {
+        match self.screen_state.load(Ordering::SeqCst) {
+            crate::constants::SCREEN_STATE_OFF_AOD
+            | crate::constants::SCREEN_STATE_DOZE
+            | crate::constants::SCREEN_STATE_DOZE_SUSPEND => crate::constants::AOD_MIN_HW,
+            _ => BRIGHTNESS_OFF,
+        }
+    }
+
+    /// Apply a screen state transition.
+    ///
+    /// The panel must not be left holding the brightness it had when the
+    /// screen goes off: the panel re-initialises on the next wake, and the
+    /// kernel's LED core skips a write whose value it already cached, so
+    /// re-writing the same value leaves the panel dark. Going off therefore
+    /// drops the panel to 0, and coming back to ON raises it to the brightness
+    /// that was requested, as a real change the driver cannot skip.
+    pub fn apply_screen_state(&self, state: i32, dbg: bool) {
+        let prev = self.screen_state.swap(state, Ordering::SeqCst);
+        if prev == state {
+            return;
+        }
+
+        if state == crate::constants::SCREEN_STATE_ON {
+            if dbg {
+                log_d(&format!(
+                    "[PanelService] screen state {} -> ON, raising brightness back",
+                    prev
+                ));
+            }
+            let raw = self.last_raw_val.load(Ordering::SeqCst);
+            if self.has_brightness.load(Ordering::SeqCst) && raw > 0 {
+                self.apply_brightness_forced(raw);
+            }
+            return;
+        }
+
+        if dbg {
+            log_d(&format!(
+                "[PanelService] screen state {} -> {}, dropping brightness",
+                prev, state
+            ));
+        }
+
+        if state == crate::constants::SCREEN_STATE_OFF_AOD
+            || state == crate::constants::SCREEN_STATE_DOZE
+            || state == crate::constants::SCREEN_STATE_DOZE_SUSPEND
+        {
+            // AOD keeps the panel lit; the framework drives the doze level.
+            // Never write 0 here: the driver applies a zero write even in AOD
+            // mode and that blanks the AOD image.
+            self.write_sysfs(crate::constants::AOD_MIN_HW, dbg);
+            return;
+        }
+
+        self.write_sysfs(BRIGHTNESS_OFF, dbg);
+    }
+
+    /// Apply the panel power state sent over the panel-feature AIDL.
+    ///
+    /// This encoding is the panel feature's own (0/3 = off, 1/2 = on), not
+    /// `debug.tracing.screen_state`, so it is kept separate from that.
+    pub fn apply_power_state(&self, on: bool, dbg: bool) {
+        if on {
+            if dbg {
+                log_d("[PanelService] panel power on, raising brightness back");
+            }
+            let raw = self.last_raw_val.load(Ordering::SeqCst);
+            if self.has_brightness.load(Ordering::SeqCst) && raw > 0 {
+                self.apply_brightness(raw);
+            }
+        } else {
+            if dbg {
+                log_d("[PanelService] panel power off, dropping brightness");
+            }
+            self.write_sysfs(self.off_level(), dbg);
+        }
+    }
+
     pub fn apply_brightness(&self, raw: i32) {
+        self.apply_brightness_inner(raw, false);
+    }
+
+    /// Apply the brightness, forcing the write through even when the value is
+    /// the one the writer last wrote.
+    ///
+    /// The panel re-initialises while the screen is off, so the kernel's LED
+    /// core drops a write whose value it already cached and the panel stays
+    /// dark. This is the wake path.
+    pub fn apply_brightness_forced(&self, raw: i32) {
+        self.apply_brightness_inner(raw, true);
+    }
+
+    /// The levels to write, in order, when the brightness changes with the
+    /// screen state.
+    ///
+    /// The panel re-initialises while it is off, so the level it is restored
+    /// to can be the one it already had, and the kernel's LED core skips that
+    /// write. Going through an intermediate level makes both writes a real
+    /// value change, so the driver applies the target.
+    pub fn state_change_levels(target_hw: i32) -> [i32; 2] {
+        [crate::constants::STATE_CHANGE_LEVEL, target_hw]
+    }
+
+    fn apply_brightness_inner(&self, raw: i32, force: bool) {
         let dbg = dbg_on();
         self.last_raw_val.store(raw, Ordering::SeqCst);
         self.has_brightness.store(true, Ordering::SeqCst);
+
+        if self.is_screen_off() {
+            // The panel is off: keep it at the off level rather than applying
+            // the user brightness, so the value it is restored to on wake
+            // differs from the one it was left at.
+            self.write_sysfs(self.off_level(), dbg);
+            return;
+        }
 
         let target_hw = if raw <= 0 {
             BRIGHTNESS_OFF
@@ -69,12 +213,21 @@ impl Inner {
         // mediatek panel driver actually reads. The light HAL's backlight id is a 0..255 light, so
         // it cannot express the upper half of the panel range and is only a fallback.
         if self.sysfs_fd.is_some() {
-            self.write_sysfs(target_hw, dbg);
-        } else if let Some(lights) = self.lights.get() {
-            let hal_value = Lights::scale_to_hal_range(target_hw, self.hw_min, self.hw_max);
-            if !lights.apply_backlight_brightness(hal_value) {
-                log_e("[PanelService] light HAL write failed and no sysfs node is open");
+            if force {
+                let levels = Self::state_change_levels(target_hw);
+                for (i, level) in levels.iter().enumerate() {
+                    if i > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            crate::constants::STATE_CHANGE_DELAY_MS,
+                        ));
+                    }
+                    self.write_sysfs_forced(*level, dbg);
+                }
+            } else {
+                self.write_sysfs(target_hw, dbg);
             }
+        } else {
+            log_e("[PanelService] no backlight sysfs node is open; brightness not applied");
         }
 
         // The Oplus 11-bit brightness is tracked in last_raw_val; the OS14 addon file mirror is
@@ -95,29 +248,7 @@ impl Inner {
 
         let mut target_raw = -1;
 
-        // 1. Try reading debug.tracing.screen_brightness
-        if let Some(pi) = crate::properties::find_prop(crate::constants::BRIGHTNESS_PROP) {
-            let pv = crate::properties::read_prop_pi(pi);
-            let trimmed = pv.value.trim();
-            if !trimmed.is_empty() {
-                if let Ok(f) = trimmed.parse::<f32>() {
-                    let val = f.round() as i32;
-                    if val > 0 {
-                        target_raw = val;
-                        if dbg {
-                            log_d(&format!(
-                                "[DisplayAdaptor] Restore ({}): fetched from {}: raw={}",
-                                source,
-                                crate::constants::BRIGHTNESS_PROP,
-                                target_raw
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Try persistent file backup
+        // 1. Try the persistent file backup.
         if target_raw <= 0 {
             if let Ok(content) = std::fs::read_to_string("/data/addon/oplus_display/last_brightness") {
                 if let Ok(val) = content.trim().parse::<i32>() {
@@ -134,7 +265,7 @@ impl Inner {
             }
         }
 
-        // 3. Try in-memory last_raw_val
+        // 2. Try in-memory last_raw_val
         if target_raw <= 0 {
             let val = self.last_raw_val.load(Ordering::SeqCst);
             if val > 0 {
@@ -142,7 +273,7 @@ impl Inner {
             }
         }
 
-        // 4. Default range minimum
+        // 3. Default range minimum
         if target_raw <= 0 {
             target_raw = self.range.read().map(|r| r.min).unwrap_or(crate::constants::FALLBACK_MIN);
         }
@@ -185,7 +316,6 @@ impl PanelService {
             has_brightness: AtomicBool::new(has_initial),
             screen_state: AtomicI32::new(2), // 2 = ON
             sysfs_fd,
-            lights: Arc::new(OnceLock::new()),
         });
         (Self { inner: Arc::clone(&inner) }, inner)
     }
@@ -315,25 +445,8 @@ impl IDisplayPanelFeature for PanelService {
             || feature == feature::POWER_STATUS
             || feature == feature::CLOSE_BL_FLAG
         {
-            self.inner.screen_state.store(val, Ordering::SeqCst);
-            if val == 0 || val == 3 {
-                // Screen off / blank
-                if dbg {
-                    log_d("[PanelService] Screen state transitioned to OFF/BLANK");
-                }
-                // The panel backlight node is the physical sink; the mediatek light HAL's
-                // backlight light is a 0..255 domain and does not drive this panel.
-                self.inner.write_sysfs(BRIGHTNESS_OFF, dbg);
-            } else if val == 1 || val == 2 {
-                // Screen on
-                if dbg {
-                    log_d("[PanelService] Screen state transitioned to ON");
-                }
-                let raw = self.inner.last_raw_val.load(Ordering::SeqCst);
-                if self.inner.has_brightness.load(Ordering::SeqCst) {
-                    self.inner.apply_brightness(raw);
-                }
-            }
+            // Panel-feature encoding: 0/3 = off, 1/2 = on.
+            self.inner.apply_power_state(val == 1 || val == 2, dbg);
             self.inner.store.set(display, feature, &Value::Int(val));
             return Ok(0);
         }
@@ -425,17 +538,68 @@ mod tests {
 
     #[test]
     fn test_scaling_math() {
-        assert_eq!(scale_brightness_linear(222, 1, 511, 222, 8191), 10);
+        assert_eq!(scale_brightness_linear(222, 1, 511, 222, 8191), 5);
         assert_eq!(scale_brightness_linear(8191, 1, 511, 222, 8191), 511);
 
-        assert_eq!(scale_brightness_curved(222, 1, 511, 222, 8191), 10);
+        assert_eq!(scale_brightness_curved(222, 1, 511, 222, 8191), 5);
         assert_eq!(scale_brightness_curved(8191, 1, 511, 222, 8191), 511);
         let mid = scale_brightness_curved(4000, 1, 511, 222, 8191);
         assert!(mid > 80 && mid < 160);
     }
 
     #[test]
-    fn get_fp_type_returns_disable_dimlayer() {
+    fn scaling_floor_is_five() {
+        // hw_min below the floor is raised to MIN_VISIBLE_HW, never lower.
+        assert_eq!(scale_brightness_linear(222, 1, 511, 222, 8191), 5);
+        assert_eq!(scale_brightness_curved(222, 1, 511, 222, 8191), 5);
+        assert_eq!(scale_brightness_custom(222, 1, 511, 222, 8191), 5);
+        // a hw_min at or above the floor is left alone
+        assert_eq!(scale_brightness_linear(222, 10, 511, 222, 8191), 10);
+    }
+
+    #[test]
+    fn state_change_writes_intermediate_level_first() {
+        // The intermediate level goes first, then the target.
+        assert_eq!(
+            Inner::state_change_levels(5),
+            [crate::constants::STATE_CHANGE_LEVEL, 5]
+        );
+        assert_eq!(crate::constants::STATE_CHANGE_LEVEL, 10);
+        // The intermediate is above the floor, so it is a level the panel lights at.
+        assert!(crate::constants::STATE_CHANGE_LEVEL > crate::constants::MIN_VISIBLE_HW);
+    }
+
+    #[test]
+    fn screen_state_off_drops_brightness_and_on_restores_it() {
+        let range = Arc::new(RwLock::new(BrightnessRange::new(222, 8191)));
+        let (service, inner) = PanelService::new(1, 511, range, None);
+
+        // A brightness request while the screen is on is stored.
+        service
+            .r#setDisplayPanelFeatureValue(feature::O_BRIGHTNESS, &[4000])
+            .unwrap();
+        assert_eq!(inner.last_raw_val.load(Ordering::SeqCst), 4000);
+
+        // Going off must not leave the panel holding that brightness.
+        inner.apply_screen_state(crate::constants::SCREEN_STATE_OFF, false);
+        assert!(inner.is_screen_off());
+
+        // Coming back on restores the requested brightness.
+        inner.apply_screen_state(crate::constants::SCREEN_STATE_ON, false);
+        assert!(!inner.is_screen_off());
+        assert_eq!(inner.last_raw_val.load(Ordering::SeqCst), 4000);
+    }
+
+    #[test]
+    fn doze_keeps_the_panel_lit() {
+        let range = Arc::new(RwLock::new(BrightnessRange::new(222, 8191)));
+        let (_service, inner) = PanelService::new(1, 511, range, None);
+        inner.apply_screen_state(crate::constants::SCREEN_STATE_DOZE, false);
+        assert!(!inner.is_screen_off());
+    }
+
+    #[test]
+    fn get_fp_type_defaults_to_unset_sentinel() {
         let range = Arc::new(RwLock::new(BrightnessRange::new(222, 8191)));
         let (service, _inner) = PanelService::new(1, 511, range, None);
 
@@ -444,6 +608,6 @@ mod tests {
             service.r#getDisplayPanelFeatureValue(feature::FP_TYPE, &mut values).unwrap(),
             0
         );
-        assert_eq!(values, vec![4]);
+        assert_eq!(values, vec![-1]);
     }
 }

@@ -1,9 +1,6 @@
 // scaling functions
 
-// Minimum hardware level that ensures panel luminescence is visible to the human eye.
-// On the Infinix X6739 NT37703 panel driver, hw level 1 maps to PWM 12 (0.29%), which is
-// completely pitch black. hw level 10 maps to PWM 125, which is dim but visible.
-pub(crate) const MIN_VISIBLE_HW: i32 = 10;
+use crate::constants::MIN_VISIBLE_HW;
 
 pub(crate) fn scale_brightness_linear(
     val: i32,

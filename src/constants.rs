@@ -11,11 +11,52 @@ pub(crate) const BRIGHTNESS_OFF: i32 = 0; // SCREEN OFF
 pub(crate) const OS14_MAX: i32 = 5118; // OS14 max fallback
 pub(crate) const OS14_MIN: i32 = 22; // OS14 min fallback
 
+/// Floor for the hardware brightness the panel is driven to.
+///
+/// The panel reports `min_brightness=1`, but at that level the backlight reads
+/// as off on this device, so the lowest level the HAL writes is 5.
+pub(crate) const MIN_VISIBLE_HW: i32 = 5;
+
+/// Lowest level written while the panel is in an AOD state.
+///
+/// The panel driver ignores a non-zero backlight write while it is in its AOD
+/// mode ("for aod jump" in the driver log), but it does apply a write of 0,
+/// which blanks the AOD image it lit itself when the doze state was entered.
+/// So the AOD states are floored at 1 instead of being turned off.
+pub(crate) const AOD_MIN_HW: i32 = 1;
+
+/// Intermediate level written while the screen state changes, before the
+/// target level.
+///
+/// Writing it first makes both writes a real value change, so the kernel's
+/// LED core applies each one instead of skipping the target as a repeat of the
+/// level it cached while the panel was off.
+pub(crate) const STATE_CHANGE_LEVEL: i32 = 10;
+
+/// Gap between the intermediate level and the target level.
+///
+/// The panel driver takes the backlight through a command queue, so two writes
+/// in the same instant collapse into one and only the last survives. The gap
+/// makes them two separate commands.
+pub(crate) const STATE_CHANGE_DELAY_MS: u64 = 30;
+
+/// Sentinel for an unset/unknown fingerprint type: consumers must fall back
+/// to the Oplus feature configuration instead of assuming a concrete type.
+pub const FP_TYPE_UNSET: i32 = -1;
+
+// Screen states reported by `debug.tracing.screen_state`.
+pub const SCREEN_STATE_OFF: i32 = 0;
+pub const SCREEN_STATE_OFF_AOD: i32 = 1;
+pub const SCREEN_STATE_ON: i32 = 2;
+pub const SCREEN_STATE_DOZE: i32 = 3;
+pub const SCREEN_STATE_DOZE_SUSPEND: i32 = 4;
+
 pub const SERVICE_NAME: &str =
     "vendor.oplus.hardware.displaypanelfeature.IDisplayPanelFeature/default";
-// System property the Oplus framework writes with its computed 11-bit brightness.
-pub const BRIGHTNESS_PROP: &str = "debug.tracing.screen_brightness";
 // System property the Oplus framework writes with screen power state (1=OFF/DOZE, 2=ON).
+// Brightness the Oplus framework computes; the only live input on ports whose
+// composer does not expose the HWC2 brightness API.
+pub const BRIGHTNESS_PROP: &str = "debug.tracing.screen_brightness";
 pub const SCREEN_STATE_PROP: &str = "debug.tracing.screen_state";
 pub const PANEL_ID_SLOTS: usize = 5;
 pub const ADDON_DIR: &str = "/data/addon/oplus_display";

@@ -2,6 +2,7 @@ service xia.display.adaptor /vendor/bin/hw/vendor.xia.display.adaptor-V6@1.0-ser
     class hal
     user system
     group system
+    capabilities SYS_PTRACE DAC_OVERRIDE
     interface aidl vendor.oplus.hardware.displaypanelfeature.IDisplayPanelFeature/default
     restart_period 5000
 

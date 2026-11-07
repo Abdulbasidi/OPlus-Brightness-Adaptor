@@ -1,5 +1,5 @@
 [package]
-name = "oplusbright"
+name = "xia_display_adaptor"
 version = "6.1.0"
 edition = "2021"
 

@@ -20,13 +20,73 @@ When porting OxygenOS or ColorOS to Transsion or generic MediaTek devices:
 3. **Silent Drop:** SurfaceFlinger drops the brightness commands because HWC reports no brightness support (`displayBrightness=nullopt`).
 4. **Bypassed Light HAL:** Because `mForceSurfaceControl` is hardcoded to `true` in `services.jar`, the framework never falls back to `android.hardware.light.ILights`. The standard Light HAL remains uncalled.
 
-### 3. The Adaptor Mechanism (Kernel Futex Property Notification)
-To restore brightness control without patching framework JAR files or replacing the vendor HWC binary:
+### 3. The Adaptor Mechanism (One-Shot In-Process HWC2 Hook)
+Brightness control is restored without patching framework JAR files and without
+replacing the vendor HWC binary:
 
-- **Property Mirroring:** When `DisplayPowerController.animateScreenBrightness` runs, it updates the system property `debug.tracing.screen_brightness` on every animation frame and slider movement.
-- **Kernel Futex Listener:** Instead of periodic polling, the adaptor uses Bionic's `__system_property_wait` API (`sys/system_properties.h`). The worker thread sleeps directly on the kernel futex associated with the property serial number.
-- **Instant Wakeup:** When Android's `property_service` updates the property, the kernel issues a `FUTEX_WAKE` syscall. The adaptor wakes instantly with sub-millisecond latency and 0.0% idle CPU usage.
-- **Hardware Output:** The adaptor normalizes the 11-bit OPlus range (`222..8191`) to the panel hardware range (typically `1..511`), applies the selected gamma curve, and writes directly to `/sys/class/leds/lcd-backlight/brightness`.
+- **Dynamic discovery:** At startup the adaptor scans `/proc/*/maps` for the
+  composer HAL process and the `hwcomposer.*.so` (or `libmtkhwc*.so`) it has
+  mapped. No MediaTek-specific path or offset is compiled in.
+- **Dynamic symbol resolution:** The two HWC2 entry points
+  (`displayGetBrightnessSupport`, `displaySetBrightness`) are resolved by
+  name from the library's own `.dynsym`/`.symtab`, and their runtime
+  addresses are computed from the ELF program headers plus the target's
+  mapping table.
+- **One-shot in-memory patch:** Two pages are mapped into the composer
+  process through `ptrace` remote syscalls. The **code** page is a private
+  file-backed `PROT_READ|PROT_EXEC` mapping of a library the composer already
+  loads — an anonymous executable mapping needs the `execmem` permission,
+  which the composer domain does not have, and `MAP_PRIVATE` keeps every
+  write inside the process so the file on disk is never touched. The
+  **state** page is a separate anonymous `PROT_READ|PROT_WRITE` mapping, and
+  the state page address is patched into a pointer slot in the code page so
+  the stubs stay position independent. The backlight node is opened *inside
+  the composer* so every write happens under the composer's own SELinux
+  label. The two entry points are then replaced with a branch into the code
+  page; the branch has a ±128 MB reach, so the free gaps in the target's
+  map table are searched for a usable code page address.
+- **Panel output:** The patched `displaySetBrightness` receives the normalized
+  `0.0..1.0` float from SurfaceFlinger, maps it onto the panel range
+  (`min_brightness`..`max_hw_brightness`), and writes the value to
+  `/sys/class/leds/lcd-backlight/brightness` itself. Redundant frames are
+  skipped by the payload's own last-value comparison.
+- **No background work:** The installer runs once and exits. There is no
+  property listener, no poll thread and no second writer on the backlight
+  node. The `android.hardware.light.ILights` client is not used at all.
+
+The payload is assembled from `asm/hwc_payload.s`; `asm/hwc_payload.bin` and
+`src/hwc_payload.rs` are generated from it and kept in sync.
+
+### 4. Verified on device, and the one limit of this port
+
+The hook mechanism was verified on a live device: the symbols are resolved
+dynamically, the payload is installed into the running composer, and the
+installed stub was driven with a normalized value of `0.5`, which scaled into
+the panel range and wrote `256` to `/sys/class/leds/lcd-backlight/brightness`
+through the composer's own descriptor.
+
+What was **not** observed on this port is any framework traffic reaching those
+entry points. Call counters inside the patched functions stayed at zero across
+a SurfaceFlinger restart and a slider change, and a software-breakpoint trace
+confirmed it: with `HWCMediator::displayPresent` trapping 953 times as a
+control, the composer's `_hidl_getDisplayBrightnessSupport` and
+`_hidl_setDisplayBrightness` recorded no hits at all.
+
+The reason is the composer interface on this port. The vendor manifest
+declares the composer as **version 2.1**, and
+`android.hardware.graphics.composer@2.1.so` has no `DisplayBrightness`
+symbols at all — those transactions only exist from V2_3 on. The composer
+service is also built on `libhwc2on1adapter.so`, so it presents an HWC1 device
+to the framework, and `HWC2On1Adapter::Display` implements no brightness
+methods either. SurfaceFlinger itself reports `displayBrightness=nullopt`.
+
+So the framework's brightness path stops at the V2_1 client boundary and
+never produces a brightness transaction for the vendor HWC2 to receive. On this
+port the hook installs cleanly, is idempotent on a second run, and stays idle;
+the only live framework→vendor brightness channel remains the
+`debug.tracing.screen_brightness` property. The hook engages on any port whose
+composer exposes the V2_3+ brightness API. See `analysis.md` section 9 for the
+full transcripts and the control measurements.
 
 ---
 
@@ -38,7 +98,10 @@ To restore brightness control without patching framework JAR files or replacing 
 
 ## Features in v6@1.0
 
-- **Kernel Futex Notification:** Replaces 50ms property polling with Bionic's `__system_property_wait`, reducing idle CPU consumption to 0.0%.
+- **One-Shot Dynamic Framework/HWC2 Hooks:**
+  - **Framework GUI Hook (`system_server` / `libgui.so`):** Injects into `system_server` and intercepts `SurfaceComposerClient::setDisplayBrightness` and `SurfaceComposerClient::getDisplayBrightnessSupport`. Bypasses SurfaceFlinger, HWC1/HWC2 composer versions, and Light HAL. Scales normalized float directly to panel range and writes to `/sys/class/leds/lcd-backlight/brightness` under `system_server`'s native SELinux permissions.
+  - **Composer Hook (`hwcomposer.*.so`):** Injects into `android.hardware.graphics.composer` for devices where HWC exposes V2_3+ brightness transactions.
+- **Zero Polling & Zero Races:** No property polling, no background loop overhead, no dual-writer contention.
 - **Native AIDL `IDisplayPanelFeature` Implementation:** Implements `vendor.oplus.hardware.displaypanelfeature.IDisplayPanelFeature/default` in Rust using `rsbinder`.
 - **UDFPS `FP_TYPE` (`0xd3`) Support:** Returns `4` (`BIT_HW_DIMLAYER`) to suppress OPlus `OnScreenFingerprintDimLayer` 92% black overlay on lockscreens.
 - **Property Overrides for `fp_type`:** Reads `ro.vendor.display.fp_type` and `persist.sys.rianixia.display.fp_type` with validation against invalid non-positive values.
@@ -80,6 +143,33 @@ persist.sys.rianixia.display-debug=true
 ## SEPolicy
 
 Address missing permissions manually or verify SELinux denials in logcat (`Xia-DisplayAdaptor`). Different kernel trees label sysfs backlight nodes under different SELinux contexts.
+
+### Required for the HWC2 hook
+
+The adaptor reaches into the composer process, so it needs `ptrace` on the
+composer domain, and the composer needs to be allowed to write the backlight
+node:
+
+```tepolicy
+# The adaptor attaches to the composer HAL.
+allow hal_allocator_default hal_graphics_composer_default:process ptrace;
+allow hal_allocator_default hal_graphics_composer_default:process getattr;
+allow hal_allocator_default capability sys_ptrace;
+
+# The composer writes the panel backlight node itself.
+allow hal_graphics_composer_default sysfs_backlight_file:file rw_file_perms;
+allow hal_graphics_composer_default sysfs_leds_31_0:file rw_file_perms;
+```
+
+The init rc grants the capabilities the `ptrace` attach needs:
+
+```text
+capabilities SYS_PTRACE DAC_OVERRIDE
+```
+
+The shipped vendor policy is precompiled, so these rules have to be added to
+the policy source and the policy rebuilt; `vendor/etc/selinux/vendor_sepolicy.cil`
+is the file that carries them.
 
 ---
 
