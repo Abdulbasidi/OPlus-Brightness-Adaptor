@@ -40,10 +40,6 @@ pub(crate) const STATE_CHANGE_LEVEL: i32 = 10;
 /// makes them two separate commands.
 pub(crate) const STATE_CHANGE_DELAY_MS: u64 = 30;
 
-/// Sentinel for an unset/unknown fingerprint type: consumers must fall back
-/// to the Oplus feature configuration instead of assuming a concrete type.
-pub const FP_TYPE_UNSET: i32 = -1;
-
 // Screen states reported by `debug.tracing.screen_state`.
 pub const SCREEN_STATE_OFF: i32 = 0;
 pub const SCREEN_STATE_OFF_AOD: i32 = 1;

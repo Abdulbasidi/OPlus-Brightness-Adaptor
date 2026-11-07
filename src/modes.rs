@@ -37,29 +37,6 @@ pub fn get_brightness_mode() -> i32 {
     get_prop_int(persist_bright_mode_prop()).unwrap_or(0)
 }
 
-pub fn get_fp_type() -> i32 {
-    if let Some(val_str) = get_prop("ro.vendor.display.fp_type")
-        .or_else(|| get_prop(crate::paths::persist_fp_type()))
-    {
-        if let Some(v) = parse_fp_type(&val_str) {
-            return v;
-        }
-    }
-    crate::constants::FP_TYPE_UNSET
-}
-
-/// Parse an FP_TYPE property value. `-1` (FP_TYPE_UNSET) is accepted so consumers
-/// fall back to the Oplus feature configuration instead of reading a hardcoded type.
-pub fn parse_fp_type(val_str: &str) -> Option<i32> {
-    let trimmed = val_str.trim();
-    let parsed = if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
-        i32::from_str_radix(hex, 16).ok()
-    } else {
-        trimmed.parse::<i32>().ok()
-    };
-    parsed.filter(|&v| v > 0 || v == crate::constants::FP_TYPE_UNSET)
-}
-
 // main runner
 pub fn run() {
     // Diagnostic mode: install the composer hook and exit without registering
@@ -193,30 +170,5 @@ pub fn run() {
     if let Err(err) = rsbinder::ProcessState::join_thread_pool() {
         log_e(&format!("[DisplayAdaptor] Binder thread pool exited: {:?}", err));
         std::process::exit(1);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_fp_type;
-    use crate::constants::FP_TYPE_UNSET;
-
-    #[test]
-    fn fp_type_minus_one_is_accepted() {
-        assert_eq!(parse_fp_type("-1"), Some(FP_TYPE_UNSET));
-        assert_eq!(parse_fp_type(" -1 "), Some(FP_TYPE_UNSET));
-    }
-
-    #[test]
-    fn fp_type_positive_and_hex_are_accepted() {
-        assert_eq!(parse_fp_type("4"), Some(4));
-        assert_eq!(parse_fp_type("0x10"), Some(16));
-    }
-
-    #[test]
-    fn fp_type_zero_and_negative_other_than_unset_are_rejected() {
-        assert_eq!(parse_fp_type("0"), None);
-        assert_eq!(parse_fp_type("-2"), None);
-        assert_eq!(parse_fp_type("abc"), None);
     }
 }

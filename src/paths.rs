@@ -22,4 +22,3 @@ pub(crate) fn persist_hw_max() -> &'static str { "persist.sys.rianixia.hw_max" }
 pub(crate) fn persist_bright_mode_prop() -> &'static str { "persist.sys.rianixia.brightness.mode" } // 0=Curved, 1=Linear, 2=Custom
 pub(crate) fn persist_lux_aod_prop() -> &'static str { "persist.sys.rianixia.oplus.lux_aod" } // for lux aod logic
 pub(crate) fn persist_lux_aod_brightness_prop() -> &'static str { "persist.sys.rianixia.oplus.lux_aod.brightness" } // New prop for overriding 1
-pub(crate) fn persist_fp_type() -> &'static str { "persist.sys.rianixia.display.fp_type" }

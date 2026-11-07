@@ -7,7 +7,7 @@ use crate::constants::{
     feature, split_feature_id, BRIGHTNESS_OFF, PANEL_ID_SLOTS, SERVICE_NAME,
 };
 use crate::logging::{log_d, log_e};
-use crate::modes::{dbg_on, get_brightness_mode, get_fp_type};
+use crate::modes::{dbg_on, get_brightness_mode};
 use crate::panel_bindings::vendor::oplus::hardware::displaypanelfeature::IDisplayPanelFeature::{
     BnDisplayPanelFeature, IDisplayPanelFeature,
 };
@@ -333,6 +333,17 @@ impl Interface for PanelService {
     }
 }
 
+pub fn is_fp_feature(feature: i32) -> bool {
+    matches!(
+        feature,
+        feature::FP_TYPE
+            | feature::FP_PRESS
+            | feature::DIMLAY_HBM
+            | feature::DIMLAYER_BL_EN
+            | 179
+    )
+}
+
 impl IDisplayPanelFeature for PanelService {
     fn r#getDisplayPanelFeatureValue(
         &self,
@@ -342,6 +353,16 @@ impl IDisplayPanelFeature for PanelService {
         let (display, feature) = split_feature_id(feature_id);
         let slots = feature_values.len();
         let dbg = dbg_on();
+
+        if is_fp_feature(feature) {
+            if dbg {
+                log_d(&format!(
+                    "[PanelService] getDisplayPanelFeatureValue(0x{:x}) dropped (fingerprint feature; falling back to non-HAL path)",
+                    feature
+                ));
+            }
+            return Err(rsbinder::StatusCode::UnknownTransaction.into());
+        }
 
         if feature == feature::MAX_BRIGHTNESS
             || feature == feature::LCD_MAX_BRIGHTNESS
@@ -380,44 +401,31 @@ impl IDisplayPanelFeature for PanelService {
             return Ok(0);
         }
 
-        if feature == feature::FP_TYPE {
-            let fp_type = self
-                .inner
-                .store
-                .get(display, feature)
-                .and_then(|v| v.as_int())
-                .unwrap_or_else(get_fp_type);
+        if let Some(value) = self.inner.store.get(display, feature) {
+            let mut produced: Vec<i32> = match &value {
+                Value::Ints(v) => v.clone(),
+                Value::Int(v) => vec![*v],
+                Value::Strings(_) => Vec::new(),
+            };
+            produced.resize(slots, 0);
+            *feature_values = produced;
+
             if dbg {
                 log_d(&format!(
-                    "[PanelService] getDisplayPanelFeatureValue(FP_TYPE): 0x{:x}",
-                    fp_type
+                    "[PanelService] getDisplayPanelFeatureValue(0x{:x}) -> {:?}",
+                    feature, feature_values
                 ));
             }
-            let mut values = vec![fp_type];
-            values.resize(slots.max(1), 0);
-            *feature_values = values;
             return Ok(0);
         }
 
-        let value = self.inner.store.get(display, feature);
-        let mut produced: Vec<i32> = match &value {
-            Some(Value::Ints(v)) => v.clone(),
-            Some(Value::Int(v)) => vec![*v],
-            Some(Value::Strings(_)) => Vec::new(),
-            None => Vec::new(),
-        };
-
-        produced.resize(slots, 0);
-        *feature_values = produced;
-
         if dbg {
             log_d(&format!(
-                "[PanelService] getDisplayPanelFeatureValue(0x{:x}) -> {:?}",
-                feature, feature_values
+                "[PanelService] getDisplayPanelFeatureValue(0x{:x}) unsupported",
+                feature
             ));
         }
-
-        Ok(0)
+        Err(rsbinder::StatusCode::UnknownTransaction.into())
     }
 
     fn r#setDisplayPanelFeatureValue(
@@ -428,6 +436,16 @@ impl IDisplayPanelFeature for PanelService {
         let (display, feature) = split_feature_id(feature_id);
         let dbg = dbg_on();
         let val = feature_values.first().copied().unwrap_or(0);
+
+        if is_fp_feature(feature) {
+            if dbg {
+                log_d(&format!(
+                    "[PanelService] setDisplayPanelFeatureValue: id=0x{:x} (feature=0x{:x}) dropped (fingerprint feature; falling back to non-HAL path)",
+                    feature_id, feature
+                ));
+            }
+            return Err(rsbinder::StatusCode::UnknownTransaction.into());
+        }
 
         if dbg {
             log_d(&format!(
@@ -599,15 +617,25 @@ mod tests {
     }
 
     #[test]
-    fn get_fp_type_defaults_to_unset_sentinel() {
+    fn fp_features_are_dropped_with_unknown_transaction() {
         let range = Arc::new(RwLock::new(BrightnessRange::new(222, 8191)));
         let (service, _inner) = PanelService::new(1, 511, range, None);
 
         let mut values = vec![0i32; 1];
-        assert_eq!(
-            service.r#getDisplayPanelFeatureValue(feature::FP_TYPE, &mut values).unwrap(),
-            0
-        );
-        assert_eq!(values, vec![-1]);
+        assert!(service
+            .r#getDisplayPanelFeatureValue(feature::FP_TYPE, &mut values)
+            .is_err());
+        assert!(service
+            .r#getDisplayPanelFeatureValue(feature::FP_PRESS, &mut values)
+            .is_err());
+        assert!(service
+            .r#getDisplayPanelFeatureValue(feature::DIMLAY_HBM, &mut values)
+            .is_err());
+        assert!(service
+            .r#setDisplayPanelFeatureValue(feature::FP_PRESS, &[1])
+            .is_err());
+        assert!(service
+            .r#setDisplayPanelFeatureValue(feature::DIMLAY_HBM, &[1])
+            .is_err());
     }
 }
