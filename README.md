@@ -21,7 +21,7 @@ For an exhaustive architectural breakdown of why stock OPlus ports fail on Media
 
 ## Adding the Prebuilt Binary to Your Vendor
 
-Download the latest release package from the GitHub Releases page (`Xia-OPlus-Brightness-Adaptor-v6@2.0.zip` or `obright_v6@2.0.zip`).
+Download the package from the [Latest Release](https://github.com/ryanistr/OPlus-Brightness-Adaptor/releases/latest).
 
 ### 1. Copy Files to Vendor Tree
 
@@ -38,29 +38,28 @@ vendor/
         └── manifest_rianixia_displaypanelfeature_aidl.xml (mode: 0644)
 ```
 
-### 2. Set SELinux File Contexts
+### 2. Set SELinux File Contexts & Permissions
 
-Label the service binary with the MediaTek Light HAL context (`mtk_hal_light_exec`):
+ROM unpackers (such as RomTools) unpack partition images alongside a `config/` directory containing filesystem metadata tables.
 
-In your vendor `file_contexts` (`vendor/etc/selinux/vendor_file_contexts` or partition fs_config):
+Do not edit files inside `vendor/etc/selinux/` directly because partition repacking scripts reconstruct contexts from the `config/` metadata directory.
 
-```text
-/vendor/bin/hw/vendor\.xia\.display\.adaptor-V6@2\.0-service    u:object_r:mtk_hal_light_exec:s0
-```
+1. **SELinux File Contexts:** In `config/vendor_file_contexts`, add an entry assigning the MediaTek Light HAL execution context (`mtk_hal_light_exec`) so the service transitions properly:
+   ```text
+   /vendor/bin/hw/vendor\.xia\.display\.adaptor-V6@2\.0-service    u:object_r:mtk_hal_light_exec:s0
+   ```
+2. **Filesystem Capabilities & Permissions:** In `config/vendor_fs_config`, ensure the binary is registered with executable permissions (`0755`):
+   ```text
+   vendor/bin/hw/vendor.xia.display.adaptor-V6@2.0-service 0 2000 0755
+   vendor/etc/init/init.xia.display.adaptor.rc 0 0 0644
+   vendor/etc/vintf/manifest/manifest_rianixia_displaypanelfeature_aidl.xml 0 0 0644
+   ```
 
 > [!IMPORTANT]
 > **DO NOT delete the stock MediaTek Light HAL.**
 > Keep the stock `android.hardware.lights-service.mediatek` binary intact. The OPlus framework uses `IDisplayPanelFeature` and `SurfaceControl.setDisplayBrightness` for primary display illumination, while notifications, buttons, and auxiliary LEDs remain handled by the stock MediaTek Light HAL. Both services coexist.
 
-### 3. Permissions & SELinux Denials
-
-Ensure correct ownership and permissions:
-
-```bash
-chmod 0755 vendor/bin/hw/vendor.xia.display.adaptor-V6@2.0-service
-chmod 0644 vendor/etc/init/init.xia.display.adaptor.rc
-chmod 0644 vendor/etc/vintf/manifest/manifest_rianixia_displaypanelfeature_aidl.xml
-```
+### 3. Verification & Denials
 
 If the display slider does not respond on first boot, check logcat and dmesg for denials:
 
