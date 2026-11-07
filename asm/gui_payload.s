@@ -37,6 +37,19 @@ page:
     ldr     w6, [x4, #0x01c]        // call counter
     add     w6, w6, #1
     str     w6, [x4, #0x01c]
+
+    ldr     w7, [x4, #0x028]        // support_abi (0 = bool in w0, 1 = bool* in x1)
+    cbz     w7, .Lret_bool
+
+    // support_abi == 1: BpSurfaceComposer (status_t in w0, bool* in x1)
+    cbz     x1, .Lret_ok
+    mov     w2, #1
+    strb    w2, [x1]                // *outSupport = true
+.Lret_ok:
+    mov     w0, #0                  // status_t NO_ERROR
+    ret
+
+.Lret_bool:
     mov     w0, #1                  // true (supported)
     ret
 
@@ -45,10 +58,18 @@ stubB:
     // ---- stub B: SurfaceComposerClient::setDisplayBrightness ----
     adr     x5, dptr
     ldr     x4, [x5]                // state page
+    ldr     w7, [x4, #0x024]        // abi_mode: 0 = struct in x1, 1 = float in s0, 2 = float in s1
+    cmp     w7, #1
+    b.eq    .LhaveDirectS0
+    cmp     w7, #2
+    b.eq    .LhaveDirectS1
+
+    // abi_mode == 0: struct in x1
     cbz     x1, .LbadB              // null pointer check
 
-    // Check displayBrightness at [x1, #0x10]
-    ldr     s0, [x1, #0x10]
+    // Check displayBrightness at struct offset
+    ldr     w8, [x4, #0x02c]        // struct_offset (default 0x10)
+    ldr     s0, [x1, w8, uxtw]
     fcmp    s0, s0                  // NaN check
     b.vs    .LfallbackSdr
     fmov    s2, #0.0
@@ -63,6 +84,14 @@ stubB:
     fmov    s2, #0.0
     fcmp    s0, s2
     b.lt    .Lzero                  // negative sdrBrightness -> screen off (0)
+    b       .LhaveCandidate
+
+.LhaveDirectS1:
+    fmov    s0, s1                  // displayBrightness in s1
+.LhaveDirectS0:
+    fcmp    s0, s0                  // NaN check
+    b.vs    .LbadB
+    fmov    s2, #0.0
 
 .LhaveCandidate:
     fcmp    s0, s2
