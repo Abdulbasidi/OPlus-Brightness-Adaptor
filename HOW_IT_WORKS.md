@@ -62,7 +62,7 @@ When porting OxygenOS or ColorOS to non-OPlus MediaTek hardware (such as Transsi
          [PATH C]  │ Native OOS AIDL Path
                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│ vendor.xia.display.adaptor-V6@2.0-service                              │
+│ vendor.xia.display.adaptor-VX@X.X-service                              │
 │   Implements: IDisplayPanelFeature & android.hardware.light            │
 │   Directly called by OOS light controller via AIDL                     │
 └────────────────────────────────────────────────────────────────────────┘

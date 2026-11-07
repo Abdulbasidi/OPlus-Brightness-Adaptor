@@ -30,7 +30,7 @@ Stage the files into your unpacked vendor partition tree:
 ```text
 vendor/
 ├── bin/hw/
-│   └── vendor.xia.display.adaptor-V6@2.0-service      (mode: 0755)
+│   └── vendor.xia.display.adaptor-VX@X.X-service      (mode: 0755)
 └── etc/
     ├── init/
     │   └── init.xia.display.adaptor.rc                (mode: 0644)
@@ -46,11 +46,11 @@ Do not edit files inside `vendor/etc/selinux/` directly because partition repack
 
 1. **SELinux File Contexts:** In `config/vendor_file_contexts`, add an entry assigning the MediaTek Light HAL execution context (`mtk_hal_light_exec`) so the service transitions properly:
    ```text
-   /vendor/bin/hw/vendor\.xia\.display\.adaptor-V6@2\.0-service    u:object_r:mtk_hal_light_exec:s0
+   /vendor/bin/hw/vendor\.xia\.display\.adaptor-VX@X\.X-service    u:object_r:mtk_hal_light_exec:s0
    ```
 2. **Filesystem Capabilities & Permissions:** In `config/vendor_fs_config`, ensure the binary is registered with executable permissions (`0755`):
    ```text
-   vendor/bin/hw/vendor.xia.display.adaptor-V6@2.0-service 0 2000 0755
+   vendor/bin/hw/vendor.xia.display.adaptor-VX@X.X-service 0 2000 0755
    vendor/etc/init/init.xia.display.adaptor.rc 0 0 0644
    vendor/etc/vintf/manifest/manifest_rianixia_displaypanelfeature_aidl.xml 0 0 0644
    ```
