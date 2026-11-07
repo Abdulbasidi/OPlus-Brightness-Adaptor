@@ -41,7 +41,7 @@ extern "C" {
 const PTRACE_PEEKTEXT: c_int = 1;
 const PTRACE_POKETEXT: c_int = 4;
 const PTRACE_ATTACH: c_int = 16;
-const PTRACE_CONT: c_int = 7;
+const PTRACE_DETACH: c_int = 17;
 const PTRACE_SINGLESTEP: c_int = 9;
 const PTRACE_SETREGSET: c_int = 0x4205;
 const PTRACE_GETREGSET: c_int = 0x4204;
@@ -584,7 +584,7 @@ pub fn install() -> io::Result<InstallReport> {
     // has to resume it again: a thread left in ptrace-stop freezes the
     // composer until init restarts the whole service.
     let result = inject(tid, svc, &composer, &backlight);
-    unsafe { ptrace(PTRACE_CONT, tid, std::ptr::null_mut(), std::ptr::null_mut()) };
+    unsafe { ptrace(PTRACE_DETACH, tid, std::ptr::null_mut(), std::ptr::null_mut()) };
     result
 }
 

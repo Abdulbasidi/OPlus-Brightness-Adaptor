@@ -157,16 +157,21 @@ pub fn run() {
     }
     log_d(&format!("[DisplayAdaptor] Registered {}", SERVICE_NAME));
 
-    // Inject brightness interceptor into system_server (libgui.so) or the
-    // composer process (hwcomposer.*.so). The target process writes the
-    // panel node directly, eliminating the need for property listeners.
+    // Inject brightness interceptor into system_server (libgui.so). The target
+    // process writes the panel node directly, eliminating the need for property listeners.
     std::thread::spawn(move || {
         let mut installed_pid = 0;
         loop {
-            if installed_pid == 0
-                || !std::path::Path::new(&format!("/proc/{}", installed_pid)).exists()
-            {
-                match crate::gui_hook::install().or_else(|_| crate::hwc_hook::install()) {
+            let alive = if installed_pid > 0 {
+                std::fs::read_to_string(format!("/proc/{}/status", installed_pid))
+                    .map(|s| !s.contains("State:\tZ"))
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+            if !alive {
+                match crate::gui_hook::install() {
                     Ok(report) => {
                         log_d(&format!(
                             "[Hook] installed: pid={} page={:#x} fd={} range={}..{}",

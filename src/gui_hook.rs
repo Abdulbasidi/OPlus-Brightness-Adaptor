@@ -22,7 +22,7 @@ extern "C" {
     ) -> std::os::raw::c_long;
 }
 
-const PTRACE_CONT: std::os::raw::c_int = 7;
+const PTRACE_DETACH: std::os::raw::c_int = 17;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SetBrightnessAbi {
@@ -505,7 +505,7 @@ pub fn install() -> io::Result<InstallReport> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no svc gadget in target"))?;
 
     let res = inject(tid, svc, &target, &backlight);
-    unsafe { ptrace(PTRACE_CONT, tid, std::ptr::null_mut(), std::ptr::null_mut()) };
+    unsafe { ptrace(PTRACE_DETACH, tid, std::ptr::null_mut(), std::ptr::null_mut()) };
     res
 }
 
