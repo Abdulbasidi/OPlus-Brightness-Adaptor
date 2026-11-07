@@ -57,7 +57,7 @@ pub fn run() {
     }
 
     let dbg = dbg_on();
-    log_d("[DisplayAdaptor] Starting vendor.xia.display.adaptor-V6@1.0-service AIDL HAL...");
+    log_d("[DisplayAdaptor] Starting vendor.xia.display.adaptor-V6@2.0-service AIDL HAL...");
 
     ensure_addon_dir();
 

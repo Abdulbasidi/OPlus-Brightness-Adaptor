@@ -27,7 +27,6 @@ extern "C" {
         offset: i64,
     ) -> *mut c_void;
     fn munmap(addr: *mut c_void, length: usize) -> c_int;
-    fn open(path: *const u8, flags: c_int) -> c_int;
     fn close(fd: c_int) -> c_int;
 }
 
@@ -36,8 +35,6 @@ const PROT_WRITE: c_int = 0x2;
 const PROT_EXEC: c_int = 0x4;
 const MAP_PRIVATE: c_int = 0x02;
 const MAP_ANONYMOUS: c_int = 0x20;
-const O_WRONLY: c_int = 0x1;
-const O_CLOEXEC: c_int = 0x80000;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -117,7 +114,7 @@ pub fn run() -> io::Result<SelfTestReport> {
     // Open the node from this process. In the injected case the composer
     // opens it, so the write happens under the composer's own label.
     let path_c = format!("{}\0", node);
-    let fd = unsafe { open(path_c.as_ptr(), O_WRONLY | O_CLOEXEC) };
+    let fd = unsafe { libc::open(path_c.as_ptr() as *const libc::c_char, libc::O_WRONLY | libc::O_CLOEXEC) };
     if fd < 0 {
         unsafe { munmap(page, PAGE_SIZE) };
         return Err(io::Error::last_os_error());
