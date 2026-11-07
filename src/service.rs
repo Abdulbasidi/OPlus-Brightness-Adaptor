@@ -552,7 +552,7 @@ mod tests {
         assert_eq!(scale_brightness_curved(222, 1, 511, 222, 8191), 5);
         assert_eq!(scale_brightness_curved(8191, 1, 511, 222, 8191), 511);
         let mid = scale_brightness_curved(4000, 1, 511, 222, 8191);
-        assert!(mid > 80 && mid < 160);
+        assert!(mid > 200 && mid < 260);
     }
 
     #[test]

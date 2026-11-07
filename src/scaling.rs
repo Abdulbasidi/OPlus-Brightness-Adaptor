@@ -4,16 +4,26 @@ use crate::constants::MIN_VISIBLE_HW;
 
 /// Automatically determine the perceptual gamma curve based on the hardware dynamic range.
 ///
-/// For 8-bit displays (hw_max ~ 255): gamma = 1.6
-/// For 9-bit displays (hw_max ~ 511): gamma = 1.8 (matches tuned AMOLED response)
-/// For 10-bit displays (hw_max ~ 1023): gamma = 2.0
-/// For 11-bit displays (hw_max ~ 2047): gamma = 2.2
-/// For 12-bit displays (hw_max ~ 4095/4096): gamma = 2.4 (standard AOSP perceptual sRGB curve)
+/// SurfaceFlinger receives a perceptual float `s0` from the framework DisplayPowerController
+/// that is already calibrated for standard 8-bit / 9-bit displays (hw_max <= 511).
+/// Therefore, for hw_max <= 511, gamma must be 1.0 (pure linear passthrough) to avoid
+/// double-gamma compounding which makes the 511 panel way too dim.
 ///
-/// Formula: clamp(1.6 + (log2(hw_max) - 8.0) * 0.2, 1.6, 2.5)
+/// For displays with higher dynamic range (hw_max > 511, e.g. 1023, 2047, 4096),
+/// dynamic range expansion causes the framework's float to ramp up too quickly,
+/// blowing out the mid-range at 30-40%. We smoothly increase gamma above 1.0
+/// proportionally with panel bit-depth:
+///   hw_max <= 511 (9-bit): gamma = 1.00
+///   hw_max = 1023 (10-bit): gamma = 1.17
+///   hw_max = 2047 (11-bit): gamma = 1.34
+///   hw_max = 4096 (12-bit): gamma = 1.51
 pub fn compute_dynamic_gamma(hw_max: i32) -> f32 {
     let bits = (hw_max.max(1) as f32).log2();
-    (1.6 + (bits - 8.0).max(0.0) * 0.2).clamp(1.6, 2.5)
+    if bits <= 9.0 {
+        1.0
+    } else {
+        (1.0 + (bits - 9.0) * 0.17).clamp(1.0, 1.8)
+    }
 }
 
 pub(crate) fn scale_brightness_curved(
@@ -44,39 +54,39 @@ mod tests {
     #[test]
     fn test_dynamic_gamma_scaling() {
         let g255 = compute_dynamic_gamma(255);
-        assert!((g255 - 1.6).abs() < 0.01, "g255 = {}", g255);
+        assert_eq!(g255, 1.0, "g255 = {}", g255);
 
         let g511 = compute_dynamic_gamma(511);
-        assert!((g511 - 1.8).abs() < 0.01, "g511 = {}", g511);
+        assert_eq!(g511, 1.0, "g511 = {}", g511);
 
         let g1023 = compute_dynamic_gamma(1023);
-        assert!((g1023 - 2.0).abs() < 0.01, "g1023 = {}", g1023);
+        assert!((g1023 - 1.17).abs() < 0.02, "g1023 = {}", g1023);
 
         let g2047 = compute_dynamic_gamma(2047);
-        assert!((g2047 - 2.2).abs() < 0.01, "g2047 = {}", g2047);
+        assert!((g2047 - 1.34).abs() < 0.02, "g2047 = {}", g2047);
 
         let g4095 = compute_dynamic_gamma(4095);
-        assert!((g4095 - 2.4).abs() < 0.01, "g4095 = {}", g4095);
+        assert!((g4095 - 1.51).abs() < 0.02, "g4095 = {}", g4095);
 
         let g4096 = compute_dynamic_gamma(4096);
-        assert!((g4096 - 2.4).abs() < 0.01, "g4096 = {}", g4096);
+        assert!((g4096 - 1.51).abs() < 0.02, "g4096 = {}", g4096);
 
         let g8191 = compute_dynamic_gamma(8191);
-        assert!((g8191 - 2.5).abs() < 0.01, "g8191 = {}", g8191);
+        assert!((g8191 - 1.68).abs() < 0.02, "g8191 = {}", g8191);
     }
 
     #[test]
     fn test_scale_curved_511_vs_4096() {
-        // At 35% on 511 panel:
+        // At 35% on 511 panel: gamma is 1.0 (linear), preserves ideal 511 curve
         let val_35_511 = 222 + (0.35 * (8191 - 222) as f32) as i32;
         let out_511 = scale_brightness_curved(val_35_511, 1, 511, 222, 8191);
-        // Ratio ~ 0.35^1.8 ~ 0.150 -> 5 + 0.150 * 506 ~ 81
-        assert!(out_511 > 70 && out_511 < 90, "out_511 = {}", out_511);
+        // Ratio = 0.35 -> 5 + 0.35 * 506 = 182
+        assert_eq!(out_511, 182);
 
-        // At 35% on 4096 panel:
+        // At 35% on 4096 panel: gamma is 1.51, prevents mid-range blowout
         let val_35_4096 = 222 + (0.35 * (8191 - 222) as f32) as i32;
         let out_4096 = scale_brightness_curved(val_35_4096, 1, 4096, 222, 8191);
-        // Ratio ~ 0.35^2.4 ~ 0.0805 -> 5 + 0.0805 * 4091 ~ 334 (8.1% of max instead of 35% which would be 1433)
-        assert!(out_4096 > 300 && out_4096 < 370, "out_4096 = {}", out_4096);
+        // Ratio = 0.35^1.51 ~ 0.204 -> 5 + 0.204 * 4091 = 840 (20.5% luminance instead of 35% which would be 1436)
+        assert!(out_4096 > 800 && out_4096 < 900, "out_4096 = {}", out_4096);
     }
 }
