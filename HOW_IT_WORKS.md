@@ -90,10 +90,10 @@ The background service implements `vendor.oplus.hardware.displaypanelfeature.IDi
 ## 4. The Dynamic Perceptual Curve
 
 Different display panels vary widely in their hardware dynamic range:
-- Standard 8-bit / 9-bit panels: `hw_max = 511`
+- Standard 8-bit / 9-bit panels (typically AMOLED / OLED, driven by display IC PWM or low-step registers): `hw_max = 511`
 - 10-bit panels: `hw_max = 1023`
 - 11-bit panels: `hw_max = 2047`
-- High-dynamic-range AMOLED panels: `hw_max = 4096`
+- 12-bit hardware-backlight panels (typically IPS LCD with high-resolution LED driver chips): `hw_max = 4096`
 
 ### The Double-Compounding Problem
 

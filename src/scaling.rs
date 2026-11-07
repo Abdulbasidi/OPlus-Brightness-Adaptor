@@ -2,8 +2,8 @@ use crate::constants::MIN_VISIBLE_HW;
 
 /// Calculates perceptual gamma exponent based on panel dynamic range.
 ///
-/// Disables secondary compounding (gamma 1.0) on standard 511-step panels.
-/// Increases gamma up to 1.51 on wide-gamut 4096-step panels to avoid mid-range blowout.
+/// Disables secondary compounding (gamma 1.0) on standard 511-step panels (typically AMOLED).
+/// Increases gamma up to 1.51 on 4096-step panels (typically high-bit IPS hardware backlights) to avoid mid-range blowout.
 pub fn compute_dynamic_gamma(hw_max: i32) -> f32 {
     let bits = (hw_max.max(1) as f32).log2();
     if bits <= 9.0 {
