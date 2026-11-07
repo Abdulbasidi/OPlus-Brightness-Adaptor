@@ -53,11 +53,6 @@ pub const SCREEN_STATE_DOZE_SUSPEND: i32 = 4;
 
 pub const SERVICE_NAME: &str =
     "vendor.oplus.hardware.displaypanelfeature.IDisplayPanelFeature/default";
-// System property the Oplus framework writes with screen power state (1=OFF/DOZE, 2=ON).
-// Brightness the Oplus framework computes; the only live input on ports whose
-// composer does not expose the HWC2 brightness API.
-pub const BRIGHTNESS_PROP: &str = "debug.tracing.screen_brightness";
-pub const SCREEN_STATE_PROP: &str = "debug.tracing.screen_state";
 pub const PANEL_ID_SLOTS: usize = 5;
 pub const ADDON_DIR: &str = "/data/addon/oplus_display";
 
