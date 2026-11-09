@@ -3,7 +3,12 @@
 // file paths & property keys
 pub(crate) fn min_bright_path() -> &'static str { "/sys/class/leds/lcd-backlight/min_brightness" }
 pub(crate) fn max_bright_path() -> &'static str { "/sys/class/leds/lcd-backlight/max_hw_brightness" }
+pub(crate) fn max_bright_fallback_path() -> &'static str { "/sys/class/leds/lcd-backlight/max_brightness" }
 pub(crate) fn bright_path() -> &'static str { "/sys/class/leds/lcd-backlight/brightness" }
+/// mi_display doze brightness switch: 0 = normal, 1 = HBM (60 nit), 2 = LBM (5 nit).
+pub(crate) fn doze_brightness_path() -> &'static str {
+    "/sys/devices/virtual/mi_display/disp_feature/disp-DSI-0/doze_brightness"
+}
 pub(crate) fn log_tag() -> &'static str { "Xia-DisplayAdaptor" }
 pub(crate) fn persist_dbg() -> &'static str { "persist.sys.rianixia.display-debug" }
 pub(crate) fn persist_custom_devmax_prop() -> &'static str { "persist.sys.rianixia.custom.devmax.brightness" }

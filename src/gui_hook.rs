@@ -11,7 +11,8 @@ use crate::hwc_hook::{
     MapLine, AT_FDCWD, B_OPCODE, B_RANGE, MAP_PRIVATE, MAP_PRIVATE_ANON, NR_MMAP, NR_MUNMAP,
     NR_OPENAT, O_RDONLY_CLOEXEC, O_WRONLY_CLOEXEC, PAGE_SIZE, PROT_RW, PROT_RX,
 };
-use crate::logging::log_d;
+use crate::logging::{log_d, log_e};
+use crate::power_hook::{self, PowerTarget};
 use crate::scaling::compute_dynamic_gamma;
 
 extern "C" {
@@ -79,6 +80,8 @@ pub struct GuiTarget {
     pub abi_mode: u32,
     pub support_abi: u32,
     pub struct_offset: u32,
+    /// Native `setDisplayPowerMode` GOT hook, when the import was found.
+    pub power: Option<PowerTarget>,
 }
 
 pub fn score_set_brightness(name: &str) -> Option<(u32, SetBrightnessAbi)> {
@@ -236,6 +239,13 @@ pub fn locate() -> io::Result<GuiTarget> {
                 "SurfaceComposerClient symbols not found",
             )
         })?;
+    let power = power_hook::locate(&maps, &elf, &lib_path);
+    if power.is_none() {
+        log_e(
+            "[GuiHook] setDisplayPowerMode GOT hook not available; AOD stay-on will not work",
+        );
+    }
+
     Ok(GuiTarget {
         pid,
         lib_path,
@@ -246,6 +256,7 @@ pub fn locate() -> io::Result<GuiTarget> {
         abi_mode: set_abi.mode_code(),
         support_abi: sup_abi.mode_code(),
         struct_offset: set_abi.struct_offset(),
+        power,
     })
 }
 
@@ -388,6 +399,13 @@ fn inject(
             let _ = poke_bytes(tid, state_page + LUT as u64, &lut);
         }
 
+        if let Some(power) = &target.power {
+            match power_hook::install(tid, code_page, power) {
+                Ok(()) => log_d("[GuiHook] power GOT hook re-installed"),
+                Err(e) => log_e(&format!("[GuiHook] power GOT hook re-install failed: {}", e)),
+            }
+        }
+
         let support_calls = peek32(tid, state_page + COUNTA as u64).unwrap_or(0);
         let set_calls = peek32(tid, state_page + COUNTB as u64).unwrap_or(0);
         let last_val = peek32(tid, state_page + 0x0c).unwrap_or(0);
@@ -423,6 +441,16 @@ fn inject(
     if !poke_bytes(tid, code_page, PAYLOAD) {
         return Err(io::Error::new(io::ErrorKind::Other, "payload write failed"));
     }
+
+    if let Some(power) = &target.power {
+        match power_hook::install(tid, code_page, power) {
+            Ok(()) => log_d("[GuiHook] power GOT hook installed"),
+            Err(e) => log_e(&format!("[GuiHook] power GOT hook install failed: {}", e)),
+        }
+    } else {
+        log_e("[GuiHook] no setDisplayPowerMode GOT target; AOD stay-on disabled");
+    }
+
     let node = backlight.node.as_bytes();
     if !poke_bytes(tid, state_page + PATHBUF as u64, node)
         || !poke32(tid, state_page + PATHBUF as u64 + node.len() as u64, 0)
