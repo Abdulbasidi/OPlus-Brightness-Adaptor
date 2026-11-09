@@ -48,6 +48,16 @@ pub const SCREEN_STATE_DOZE_SUSPEND: i32 = 4;
 pub const SERVICE_NAME: &str =
     "vendor.oplus.hardware.displaypanelfeature.IDisplayPanelFeature/default";
 pub const PANEL_ID_SLOTS: usize = 5;
+
+/// Panel capability mask reported for feature `0xd9`.
+///
+/// The feature is dual-purpose: SystemUI *sets* it to the current AOD style
+/// (`[4]` for panoramic), but *gets* it to learn what the panel supports.
+/// Bit `0x4` is panoramic and bit `0x8` is panoramic all-day; without `0x8`
+/// SystemUI treats panoramic AOD as an energy-saving mode and hides it after
+/// five seconds. Bit `0x2` (smooth transition) stays off because this panel
+/// does not implement the OPLUS smooth-transition pipeline.
+pub const AOD_PANEL_FEATURE_CAPABILITIES: i32 = 0xc;
 pub const ADDON_DIR: &str = "/data/addon/oplus_display";
 
 pub mod feature {
@@ -96,6 +106,7 @@ pub mod feature {
     pub const FAKE_AOD: i32 = 0xd5;
     pub const PANEL_TYPE: i32 = 0xd6;
     pub const HBM_MAX: i32 = 0xd8;
+    pub const AOD_PANEL_FEATURE: i32 = 0xd9;
     pub const DC_COMPENSATE: i32 = 0xdc;
     pub const FOSS: i32 = 0xe1;
     pub const UIR: i32 = 0xe2;

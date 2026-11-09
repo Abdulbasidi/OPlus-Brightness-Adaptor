@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use rsbinder::{BinderResult, Interface, SIBinder, Strong};
 
 use crate::constants::{
-    feature, split_feature_id, BRIGHTNESS_OFF, PANEL_ID_SLOTS, SERVICE_NAME,
+    feature, split_feature_id, AOD_PANEL_FEATURE_CAPABILITIES, BRIGHTNESS_OFF, PANEL_ID_SLOTS,
+    SERVICE_NAME,
 };
 use crate::logging::{log_d, log_e};
 use crate::modes::dbg_on;
@@ -355,6 +356,23 @@ impl IDisplayPanelFeature for PanelService {
                 ));
             }
             return Err(rsbinder::StatusCode::UnknownTransaction.into());
+        }
+
+        // `0xd9` is dual-purpose: SystemUI sets it to the current AOD style, but
+        // reads it back to learn which AOD modes the panel supports. Echoing the
+        // stored style makes SystemUI think panoramic all-day is unsupported,
+        // which turns panoramic AOD into a five-second energy-saving preview.
+        if feature == feature::AOD_PANEL_FEATURE {
+            let mut produced = vec![AOD_PANEL_FEATURE_CAPABILITIES];
+            produced.resize(slots, 0);
+            *feature_values = produced;
+            if dbg {
+                log_d(&format!(
+                    "[PanelService] getDisplayPanelFeatureValue(0x{:x}) -> {:?} (capabilities)",
+                    feature, feature_values
+                ));
+            }
+            return Ok(0);
         }
 
         if feature == feature::MAX_BRIGHTNESS
