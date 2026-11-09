@@ -8,17 +8,14 @@
 //! The adaptor therefore reads the ordinary light sensor itself through
 //! `libsensorndkbridge.so` (the NDK sensor shim that vendor processes are
 //! allowed to load; `libandroid.so` is not reachable from the vendor linker
-//! namespace) and drives the mi_display node directly:
+//! namespace).
 //!
-//! ```text
-//! doze_brightness: 0 = DOZE_TO_NORMAL
-//!                  1 = DOZE_BRIGHTNESS_HBM (60 nit, bright ambient light)
-//!                  2 = DOZE_BRIGHTNESS_LBM (5 nit,  dark ambient light)
-//! ```
-//!
-//! Writing 0 when the panel leaves doze keeps the kernel feature state
-//! consistent, and writing 1/2 while the panel is in doze is what makes the
-//! panel driver switch its AOD emission level.
+//! Doze levels are `0` = normal, `1` = HBM (60 nit) and `2` = LBM (5 nit).
+//! The panel driver already writes the HBM level from its own normal-to-AOD
+//! entry sequence. Sending another `0x6D` command while the panel is already
+//! in AOD leaves this DDIC blank until the next doze entry, so the adaptor
+//! must not touch the doze node while dozing. The monitor still tracks lux
+//! and exposes diagnostics, but visibility always wins over dimming.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
@@ -37,8 +34,6 @@ const SENSOR_TYPE_LIGHT: c_int = 5;
 /// Xiaomi private lux sensor (`light_smd`), used if the standard node is absent.
 const SENSOR_TYPE_LIGHT_SMD: c_int = 0x1fa265f;
 
-const SCREEN_STATE_OFF: i32 = 0;
-const SCREEN_STATE_OFF_AOD: i32 = 1;
 const SCREEN_STATE_ON: i32 = 2;
 const SCREEN_STATE_DOZE: i32 = 3;
 const SCREEN_STATE_DOZE_SUSPEND: i32 = 4;
@@ -54,6 +49,9 @@ const SENSOR_RATE_US: i32 = 500_000;
 /// Diagnostic command channel, polled only while the debug property is set.
 const CMD_PATH: &str = "/data/local/tmp/xia_aod_cmd";
 const SENSOR_TEST_LOG: &str = "/data/local/tmp/xia_sensor_test.log";
+/// Raw DSI command channel (mi_display sysfs, writable by the system uid).
+const MIPI_RW_PATH: &str =
+    "/sys/devices/virtual/mi_display/disp_feature/disp-DSI-0/mipi_rw";
 
 /// Last doze-brightness value this process wrote (0/1/2), -1 when unknown.
 static LAST_MODE: AtomicI32 = AtomicI32::new(-1);
@@ -329,23 +327,16 @@ pub fn in_doze() -> bool {
 
 /// SystemUI's `OplusOSAodManager.setAODLightMode(I)` path (panel feature 7).
 ///
-/// The COS controller calls it with 1 for a dark environment and 0 for a
-/// light one, so 1 maps to the low panel level and 0 to the high one.
+/// The panel driver has already selected the bright AOD level when the panel
+/// entered doze. A second level change is not forwarded because this DDIC
+/// blanks itself when `0x6D` is rewritten during AOD.
 pub fn on_aod_light_mode(mode: i32) {
-    if !in_doze() {
-        log_d("[Aod] feature 7 ignored: panel is not in doze");
-        return;
-    }
-    let target = if mode == 1 {
-        DOZE_BRIGHTNESS_LBM
-    } else {
-        DOZE_BRIGHTNESS_HBM
-    };
+    // Do not forward this to the panel: a mid-AOD 0x6D write blanks the
+    // DDIC, and the entry sequence already selected HBM.
     log_d(&format!(
-        "[Aod] feature 7 light mode {}, target doze level {}",
-        mode, target
+        "[Aod] feature 7 light mode {} ignored (AOD stays at HBM)",
+        mode
     ));
-    apply_doze_mode(target, "feature-7");
 }
 
 fn desired_for_lux(lux: f32) -> i32 {
@@ -478,6 +469,15 @@ fn aod_thread() {
                                 write_mode(v, "command", true);
                             }
                         }
+                        Some("mipi") => {
+                            let payload = cmd[4..].trim();
+                            match std::fs::write(MIPI_RW_PATH, format!("{}\n", payload)) {
+                                Ok(_) => log_d(&format!("[Aod] mipi_rw <= {}", payload)),
+                                Err(e) => {
+                                    log_e(&format!("[Aod] mipi_rw write failed: {}", e))
+                                }
+                            }
+                        }
                         Some("normal") | Some("off") => {
                             write_mode(DOZE_TO_NORMAL, "command", true)
                         }
@@ -506,14 +506,8 @@ fn aod_thread() {
                 last_state, state, last_lux
             ));
             last_state = state;
-
-            if state == SCREEN_STATE_ON {
-                // Leave the kernel doze feature in its normal state so the next
-                // AOD entry starts from a clean slate.
-                write_mode(DOZE_TO_NORMAL, "screen-on", false);
-            } else if state == SCREEN_STATE_OFF || state == SCREEN_STATE_OFF_AOD {
-                write_mode(DOZE_TO_NORMAL, "screen-off", false);
-            }
+            // Intentionally no doze-node writes on screen state changes: the
+            // kernel's AOD entry sequence selects HBM by itself.
         }
 
         let dozing = state == SCREEN_STATE_DOZE || state == SCREEN_STATE_DOZE_SUSPEND;
@@ -523,11 +517,15 @@ fn aod_thread() {
             if let Some(lux) = effective_lux {
                 let desired = desired_for_lux(lux);
                 if !was_dozing {
-                    // Force one write per AOD entry: the display driver may have
-                    // reset the node while the panel was on.
-                    write_mode(desired, "doze-enter", true);
+                    log_d(&format!(
+                        "[Aod] doze entry at lux {:.1}: panel keeps its HBM level (desired {})",
+                        lux, desired
+                    ));
                 } else if desired != LAST_MODE.load(Ordering::SeqCst) {
-                    write_mode(desired, "lux-change", false);
+                    log_d(&format!(
+                        "[Aod] lux {:.1} wants level {}; not written (mid-AOD 0x6D blanks the panel)",
+                        lux, desired
+                    ));
                 }
             }
         }
