@@ -452,6 +452,19 @@ impl IDisplayPanelFeature for PanelService {
             return Ok(0);
         }
 
+        if feature == feature::AOD {
+            // SystemUI's setAODLightMode(): 1 = dark environment, 0 = light.
+            if dbg {
+                log_d(&format!(
+                    "[PanelService] setDisplayPanelFeatureValue(AOD light mode): {}",
+                    val
+                ));
+            }
+            crate::aod::on_aod_light_mode(val);
+            self.inner.store.set(display, feature, &Value::Int(val));
+            return Ok(0);
+        }
+
         if feature == feature::POWER
             || feature == feature::POWER_STATUS
             || feature == feature::CLOSE_BL_FLAG

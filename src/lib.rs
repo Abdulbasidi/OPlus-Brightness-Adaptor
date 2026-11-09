@@ -11,6 +11,7 @@ pub mod gui_payload;
 pub mod hwc_hook;
 pub mod hwc_payload;
 pub mod ffi;
+pub mod aod;
 pub mod logging;
 pub mod modes;
 pub mod paths;

@@ -44,6 +44,16 @@ pub fn run() {
         return;
     }
 
+    if std::env::args().any(|a| a == "--sensor-test") {
+        let seconds = std::env::args()
+            .skip_while(|a| a != "--sensor-test")
+            .nth(1)
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(20);
+        crate::aod::sensor_test(seconds);
+        return;
+    }
+
     if std::env::args().any(|a| a == "--hook-only") {
         let res = crate::gui_hook::install().or_else(|_| crate::hwc_hook::install());
         match res {
@@ -112,6 +122,12 @@ pub fn run() {
         std::process::exit(1);
     }
     log_d(&format!("[DisplayAdaptor] Registered {}", SERVICE_NAME));
+
+    // Ambient-light driven AOD brightness: keeps the light sensor registered
+    // while the panel is in doze and writes the mi_display doze_brightness
+    // node, because the COS SystemUI AOD controller cannot find its private
+    // MTK lux sensor on this port.
+    crate::aod::spawn();
 
     // Inject brightness interceptor into system_server (libgui.so). The target
     // process writes the panel node directly, eliminating the need for property listeners.
