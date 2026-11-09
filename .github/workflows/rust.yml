@@ -72,8 +72,34 @@ jobs:
         name: Xia-OPlus-Brightness-Adaptor-v6@2.0
         path: release
 
+  publish-telegram:
+    name: Publish display adaptor HAL to Telegram
+    needs: build-android
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download built artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: Xia-OPlus-Brightness-Adaptor-v6@2.0
+        path: artifact
+
+    - name: Locate HAL binary
+      id: locate
+      run: |
+        set -euo pipefail
+        BIN="$(find artifact -type f -name 'vendor.xia.display.adaptor-V6@2.0-service' -print -quit)"
+        if [ -z "$BIN" ]; then
+          echo "::error::display adaptor HAL binary not found in artifact"
+          find artifact -maxdepth 6 -type f -print
+          exit 1
+        fi
+        echo "bin=$BIN" >> "$GITHUB_OUTPUT"
+        ls -l "$BIN"
+        file "$BIN"
+
     - name: Send HAL binary to Telegram
-      if: ${{ github.event_name != 'pull_request' }}
       env:
         BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -81,16 +107,14 @@ jobs:
         RUN_NUMBER: ${{ github.run_number }}
         SERVER_URL: ${{ github.server_url }}
         REPOSITORY: ${{ github.repository }}
+        BIN: ${{ steps.locate.outputs.bin }}
       run: |
-        BIN=release/vendor/bin/hw/vendor.xia.display.adaptor-V6@2.0-service
+        set -euo pipefail
         if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
           echo "::warning::TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID secrets are not set, skipping Telegram upload"
           exit 0
         fi
-        if [ ! -f "$BIN" ]; then
-          echo "::error::$BIN not found"
-          exit 1
-        fi
+        test -f "$BIN"
 
         api="https://api.telegram.org/bot${BOT_TOKEN}"
         name=$(basename "$BIN")
@@ -104,7 +128,7 @@ jobs:
         header=$(printf '<b>ruby display adaptor HAL</b>\n\n<b>File:</b> <code>%s</code>\n<b>Size:</b> %s MB (%s bytes)\n<b>SHA-256:</b> <code>%s</code>\n<b>Commit:</b> <code>%s</code>\n<b>Run:</b> #%s\n\nVendor binary, not a flashable zip.' \
           "$name" "$size_mb" "$size" "$sha" "$short_commit" "$RUN_NUMBER")
 
-        curl -sS --fail -X POST "${api}/sendMessage" \
+        curl -sS --fail --retry 3 --retry-delay 5 -X POST "${api}/sendMessage" \
           -d chat_id="${CHAT_ID}" \
           -d parse_mode="HTML" \
           -d disable_web_page_preview="true" \
@@ -113,7 +137,7 @@ jobs:
 
         caption=$(printf '<b>%s</b>\n%s MB\nSHA-256: <code>%s</code>\n<code>%s</code>' \
           "$name" "$size_mb" "$sha_short" "$run_url")
-        curl -sS --fail -F document=@"$BIN" \
+        curl -sS --fail --retry 3 --retry-delay 5 -F "document=@${BIN}" \
           -F chat_id="${CHAT_ID}" \
           -F parse_mode="HTML" \
           -F caption="$caption" \
