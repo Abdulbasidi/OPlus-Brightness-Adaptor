@@ -42,7 +42,7 @@ pub struct PowerTarget {
 /// ```text
 /// 0x500  bti  c
 /// 0x504  cmp  w1, #3
-/// 0x508  b.ne 0x514
+/// 0x508  b.ne 0x510
 /// 0x50c  mov  w1, #1
 /// 0x510  ldr  x16, [pc, #12]   ; literal at 0x51c
 /// 0x514  br   x16
@@ -58,7 +58,7 @@ pub fn stub_bytes(original: u64) -> [u8; STUB_LEN] {
     let insns: [(usize, u32); 7] = [
         (0x00, 0xd503_245f), // bti c
         (0x04, 0x7100_0c3f), // cmp w1, #3
-        (0x08, 0x5400_0061), // b.ne +12
+        (0x08, 0x5400_0041), // b.ne +8
         (0x0c, 0x5280_0021), // mov w1, #1
         (0x10, 0x5800_0070), // ldr x16, [pc, #12]
         (0x14, 0xd61f_0200), // br x16
@@ -255,7 +255,7 @@ mod tests {
         };
         assert_eq!(u32_at(0x00), 0xd503_245f); // bti c
         assert_eq!(u32_at(0x04), 0x7100_0c3f); // cmp w1, #3
-        assert_eq!(u32_at(0x08), 0x5400_0061); // b.ne +12
+        assert_eq!(u32_at(0x08), 0x5400_0041); // b.ne +8
         assert_eq!(u32_at(0x0c), 0x5280_0021); // mov w1, #1
         assert_eq!(u32_at(0x10), 0x5800_0070); // ldr x16, [pc, #12]
         assert_eq!(u32_at(0x14), 0xd61f_0200); // br x16
