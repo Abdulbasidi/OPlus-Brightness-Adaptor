@@ -11,11 +11,15 @@
 //! namespace).
 //!
 //! Doze levels are `0` = normal, `1` = HBM (60 nit) and `2` = LBM (5 nit).
-//! The panel driver already writes the HBM level from its own normal-to-AOD
-//! entry sequence. Sending another `0x6D` command while the panel is already
-//! in AOD leaves this DDIC blank until the next doze entry, so the adaptor
-//! must not touch the doze node while dozing. The monitor still tracks lux
-//! and exposes diagnostics, but visibility always wins over dimming.
+//! The panel driver writes `0x6D 0x00` (HBM) from its own normal-to-AOD entry
+//! sequence, and `doze_brightness` alone does not change the level on this
+//! DDIC. A bare `0x6D` write during AOD was observed to blank the panel, so a
+//! level change is applied as `0x6D <level>` followed by a short `0x39`
+//! re-entry after 20 ms. The level is only rewritten after the ambient light
+//! has stayed in the new bucket for two seconds and never more often than
+//! every three seconds; the entry grace period protects the initial panel
+//! sequence. Visibility still wins over dimming: an unknown level is never
+//! written, and any failure leaves the current level in place.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
@@ -43,6 +47,78 @@ const DARK_LUX: f32 = 10.0;
 /// Above this lux the AOD switches to the high (60 nit) level.
 const LIGHT_LUX: f32 = 40.0;
 
+/// Ambient light must stay on the new level this long before it is applied.
+const LEVEL_SETTLE: Duration = Duration::from_secs(2);
+/// Never rewrite the panel level more often than this.
+const LEVEL_MIN_INTERVAL: Duration = Duration::from_secs(3);
+/// Let the normal-to-AOD entry sequence finish before touching 0x6D.
+const AOD_ENTRY_GRACE: Duration = Duration::from_millis(800);
+/// Delay between 0x6D and the 0x39 re-entry.
+const REENTRY_DELAY: Duration = Duration::from_millis(20);
+
+/// `persist.sys.rianixia.aod-reentry`:
+///   0 = only 0x6D, 1 = 0x6D + 0x39 (short write), 2 = 0x6D + 0x39 00.
+fn reentry_mode() -> u8 {
+    crate::properties::get_prop("persist.sys.rianixia.aod-reentry")
+        .and_then(|s| s.trim().parse::<u8>().ok())
+        .filter(|v| *v <= 2)
+        .unwrap_or(1)
+}
+
+fn write_mipi_raw(payload: &str) -> Result<(), String> {
+    std::fs::write(MIPI_RW_PATH, format!("{}\n", payload))
+        .map_err(|e| format!("{}: {}", MIPI_RW_PATH, e))
+}
+
+/// Change the AOD level without leaving doze.
+///
+/// The panel driver's own `set_doze_brightness` path writes 0x6D only when
+/// `CONFIG_MI_DISP_VDO_TO_CMD_AOD` is enabled, which leaves this DDIC showing
+/// the old level. 0x6D followed by a 0x39 re-entry latches the new level while
+/// the panel stays in AOD.
+fn write_aod_level(level: i32, reason: &str) -> bool {
+    let payload = match level {
+        DOZE_BRIGHTNESS_LBM => "00 02 6D 02",
+        DOZE_BRIGHTNESS_HBM => "00 02 6D 00",
+        _ => {
+            log_e(&format!("[Aod] refusing unknown AOD level {}", level));
+            return false;
+        }
+    };
+
+    if let Err(e) = write_mipi_raw(payload) {
+        log_e(&format!("[Aod] 0x6D write failed ({}): {}", reason, e));
+        return false;
+    }
+
+    std::thread::sleep(REENTRY_DELAY);
+    let reentry = match reentry_mode() {
+        0 => None,
+        2 => Some("00 02 39 00"),
+        _ => Some("00 01 39"),
+    };
+    if let Some(cmd) = reentry {
+        if let Err(e) = write_mipi_raw(cmd) {
+            log_e(&format!("[Aod] 0x39 re-entry failed ({}): {}", reason, e));
+            return false;
+        }
+    }
+
+    LAST_MODE.store(level, Ordering::SeqCst);
+    log_d(&format!(
+        "[Aod] level {} ({}) applied via 0x6D + reentry {} reason={}",
+        level,
+        match level {
+            DOZE_BRIGHTNESS_HBM => "HBM/60nit",
+            DOZE_BRIGHTNESS_LBM => "LBM/5nit",
+            _ => "unknown",
+        },
+        reentry.unwrap_or("none"),
+        reason
+    ));
+    true
+}
+
 const POLL_TIMEOUT_MS: c_int = 200;
 const SENSOR_RATE_US: i32 = 500_000;
 
@@ -55,6 +131,8 @@ const MIPI_RW_PATH: &str =
 
 /// Last doze-brightness value this process wrote (0/1/2), -1 when unknown.
 static LAST_MODE: AtomicI32 = AtomicI32::new(-1);
+/// Last panel-feature-7 mode logged, to avoid repeating the same line.
+static LAST_FEATURE7: AtomicI32 = AtomicI32::new(-1);
 
 // ---------------------------------------------------------------------------
 // libsensorndkbridge FFI
@@ -327,26 +405,25 @@ pub fn in_doze() -> bool {
 
 /// SystemUI's `OplusOSAodManager.setAODLightMode(I)` path (panel feature 7).
 ///
-/// The panel driver has already selected the bright AOD level when the panel
-/// entered doze. A second level change is not forwarded because this DDIC
-/// blanks itself when `0x6D` is rewritten during AOD.
+/// The ambient-light monitor in this process owns the AOD level. Forwarding
+/// feature 7 as well would create a second writer racing on 0x6D, so the mode
+/// is only logged (once per value) for diagnostics.
 pub fn on_aod_light_mode(mode: i32) {
-    // Do not forward this to the panel: a mid-AOD 0x6D write blanks the
-    // DDIC, and the entry sequence already selected HBM.
-    log_d(&format!(
-        "[Aod] feature 7 light mode {} ignored (AOD stays at HBM)",
-        mode
-    ));
+    if LAST_FEATURE7.swap(mode, Ordering::SeqCst) != mode {
+        log_d(&format!(
+            "[Aod] feature 7 light mode {} ignored (lux monitor owns the level)",
+            mode
+        ));
+    }
 }
 
-fn desired_for_lux(lux: f32) -> i32 {
+fn desired_for_lux(lux: f32, current: i32) -> i32 {
     if lux <= DARK_LUX {
         DOZE_BRIGHTNESS_LBM
     } else if lux >= LIGHT_LUX {
         DOZE_BRIGHTNESS_HBM
     } else {
         // Hysteresis: keep the level chosen for the previous environment.
-        let current = LAST_MODE.load(Ordering::SeqCst);
         if current == DOZE_BRIGHTNESS_HBM || current == DOZE_BRIGHTNESS_LBM {
             current
         } else {
@@ -394,6 +471,14 @@ fn aod_thread() {
     let mut last_cmd = std::fs::read_to_string(CMD_PATH)
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
+    // The normal-to-AOD entry table writes 0x6D 0x00 (HBM), so the panel is
+    // bright as soon as doze starts. Track what we actually applied instead of
+    // trusting the doze_brightness node, which stays 0 on this DDIC.
+    let mut applied_level: i32 = -1;
+    let mut doze_entered_at: Option<Instant> = None;
+    let mut pending_level: Option<(i32, Instant)> = None;
+    let mut last_level_write = Instant::now() - LEVEL_MIN_INTERVAL;
+    let mut last_pending_log = Instant::now() - Duration::from_secs(30);
 
     loop {
         // (Re)open the sensor if it is not available yet.
@@ -471,10 +556,19 @@ fn aod_thread() {
                         }
                         Some("mipi") => {
                             let payload = cmd[4..].trim();
-                            match std::fs::write(MIPI_RW_PATH, format!("{}\n", payload)) {
+                            match write_mipi_raw(payload) {
                                 Ok(_) => log_d(&format!("[Aod] mipi_rw <= {}", payload)),
                                 Err(e) => {
                                     log_e(&format!("[Aod] mipi_rw write failed: {}", e))
+                                }
+                            }
+                        }
+                        Some("level") => {
+                            if let Some(v) = parts.next().and_then(|s| s.parse::<i32>().ok()) {
+                                if in_doze() {
+                                    write_aod_level(v, "command");
+                                } else {
+                                    log_e("[Aod] level command ignored: screen is not dozing");
                                 }
                             }
                         }
@@ -513,19 +607,55 @@ fn aod_thread() {
         let dozing = state == SCREEN_STATE_DOZE || state == SCREEN_STATE_DOZE_SUSPEND;
         let effective_lux = manual_lux.or(last_lux);
 
+        if dozing && !was_dozing {
+            doze_entered_at = Some(Instant::now());
+            pending_level = None;
+            // lcm_normal_to_aod[] writes 0x6D 0x00 before 0x39, so the panel
+            // starts at 60 nit. Adopt that as the known applied level.
+            applied_level = DOZE_BRIGHTNESS_HBM;
+            LAST_MODE.store(applied_level, Ordering::SeqCst);
+        } else if !dozing && was_dozing {
+            doze_entered_at = None;
+            pending_level = None;
+            applied_level = -1;
+        }
+
         if dozing {
             if let Some(lux) = effective_lux {
-                let desired = desired_for_lux(lux);
-                if !was_dozing {
-                    log_d(&format!(
-                        "[Aod] doze entry at lux {:.1}: panel keeps its HBM level (desired {})",
-                        lux, desired
-                    ));
-                } else if desired != LAST_MODE.load(Ordering::SeqCst) {
-                    log_d(&format!(
-                        "[Aod] lux {:.1} wants level {}; not written (mid-AOD 0x6D blanks the panel)",
-                        lux, desired
-                    ));
+                let desired = desired_for_lux(lux, applied_level);
+                let ready = doze_entered_at
+                    .map(|t| t.elapsed() >= AOD_ENTRY_GRACE)
+                    .unwrap_or(true);
+
+                if ready && desired != applied_level {
+                    let stable = match pending_level {
+                        Some((level, since)) if level == desired => {
+                            since.elapsed() >= LEVEL_SETTLE
+                        }
+                        _ => {
+                            pending_level = Some((desired, Instant::now()));
+                            false
+                        }
+                    };
+
+                    if stable && last_level_write.elapsed() >= LEVEL_MIN_INTERVAL {
+                        if write_aod_level(desired, "ambient") {
+                            applied_level = desired;
+                        }
+                        pending_level = None;
+                        last_level_write = Instant::now();
+                    } else if last_pending_log.elapsed() >= Duration::from_secs(30) {
+                        log_d(&format!(
+                            "[Aod] lux {:.1} wants level {}; applied {} (waiting for {}s stable)",
+                            lux,
+                            desired,
+                            applied_level,
+                            LEVEL_SETTLE.as_secs()
+                        ));
+                        last_pending_log = Instant::now();
+                    }
+                } else {
+                    pending_level = None;
                 }
             }
         }
