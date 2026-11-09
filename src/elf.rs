@@ -4,6 +4,12 @@
 const SHT_SYMTAB: u32 = 2;
 const SHT_DYNSYM: u32 = 11;
 const SHT_STRTAB: u32 = 3;
+const SHT_RELA: u32 = 4;
+
+/// `R_AARCH64_JUMP_SLOT`: a PLT entry's GOT slot.
+pub const R_AARCH64_JUMP_SLOT: u32 = 1026;
+/// `R_AARCH64_GLOB_DAT`: a non-PLT GOT slot.
+pub const R_AARCH64_GLOB_DAT: u32 = 1025;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Symbol {
@@ -25,9 +31,21 @@ pub struct Segment {
     pub flags: u32,
 }
 
+/// One `Elf64_Rela` entry with its symbol name resolved when present.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Relocation {
+    /// Virtual address of the relocated slot (the GOT slot for imports).
+    pub offset: u64,
+    /// `ELF64_R_TYPE(r_info)`.
+    pub r_type: u32,
+    /// Name of the referenced dynamic symbol, empty for relative relocations.
+    pub symbol: String,
+}
+
 pub struct Elf {
     pub symbols: Vec<Symbol>,
     pub segments: Vec<Segment>,
+    pub relocations: Vec<Relocation>,
 }
 
 fn rd_u16(b: &[u8], off: usize) -> Option<u16> {
@@ -149,7 +167,50 @@ impl Elf {
             let _ = idx;
         }
 
-        Ok(Elf { symbols, segments })
+        // Relocations. Only SHT_RELA is used on aarch64; the `.rela.plt` and
+        // `.rela.dyn` sections both link to the dynamic symbol table.
+        let mut relocations = Vec::new();
+        for sh in &sections {
+            if sh.sh_type != SHT_RELA {
+                continue;
+            }
+            let symtab = match sections.get(sh.sh_link as usize) {
+                Some(s) if s.sh_type == SHT_DYNSYM || s.sh_type == SHT_SYMTAB => s,
+                _ => continue,
+            };
+            let strtab = match sections.get(symtab.sh_link as usize) {
+                Some(s) if s.sh_type == SHT_STRTAB => s,
+                _ => continue,
+            };
+            let entsize = if sh.sh_entsize == 0 { 24 } else { sh.sh_entsize } as usize;
+            if entsize < 24 {
+                continue;
+            }
+            let count = (sh.sh_size as usize) / entsize;
+            let sym_entsize = if symtab.sh_entsize == 0 { 24 } else { symtab.sh_entsize } as usize;
+            for i in 0..count {
+                let base = (sh.sh_offset as usize) + i * entsize;
+                let r_offset = rd_u64(data, base).unwrap_or(0);
+                let r_info = rd_u64(data, base + 8).unwrap_or(0);
+                let sym_idx = (r_info >> 32) as usize;
+                let r_type = (r_info & 0xffff_ffff) as u32;
+                let symbol = if sym_idx != 0 && sym_entsize >= 24 {
+                    let sym_off = (symtab.sh_offset as usize) + sym_idx * sym_entsize;
+                    let st_name = rd_u32(data, sym_off).unwrap_or(0) as usize;
+                    let name_off = (strtab.sh_offset as usize).saturating_add(st_name);
+                    if st_name != 0 && name_off < data.len() {
+                        cstr(data, name_off)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+                relocations.push(Relocation { offset: r_offset, r_type, symbol });
+            }
+        }
+
+        Ok(Elf { symbols, segments, relocations })
     }
 
     /// First symbol whose name contains `needle`, preferring dynamic symbols.
@@ -158,9 +219,29 @@ impl Elf {
         dyn_hit.or_else(|| self.symbols.iter().find(|s| s.name.contains(needle)))
     }
 
+    /// Symbol with exactly this mangled name, preferring dynamic symbols.
+    pub fn find_exact(&self, name: &str) -> Option<&Symbol> {
+        let dyn_hit = self.symbols.iter().find(|s| s.dynamic && s.name == name);
+        dyn_hit.or_else(|| self.symbols.iter().find(|s| s.name == name))
+    }
+
     /// All symbols whose name contains `needle`.
     pub fn find_all(&self, needle: &str) -> Vec<&Symbol> {
         self.symbols.iter().filter(|s| s.name.contains(needle)).collect()
+    }
+
+    /// GOT relocations that import a symbol whose name contains `needle`.
+    ///
+    /// Only function/data imports (`JUMP_SLOT` and `GLOB_DAT`) are returned;
+    /// relative relocations never carry a symbol name.
+    pub fn find_import_got(&self, needle: &str) -> Vec<&Relocation> {
+        self.relocations
+            .iter()
+            .filter(|r| {
+                (r.r_type == R_AARCH64_JUMP_SLOT || r.r_type == R_AARCH64_GLOB_DAT)
+                    && r.symbol.contains(needle)
+            })
+            .collect()
     }
 }
 
@@ -237,6 +318,47 @@ mod tests {
         let sym = elf.find("displayGetBrightnessSupport").expect("symbol found");
         assert_eq!(sym.value, 0x745e8);
         assert_eq!(elf.find("displaySetBrightness"), None);
+    }
+
+    /// Add a `.rela.plt`-like section that references the single dynamic
+    /// symbol built by `build_elf`.
+    fn with_rela(mut data: Vec<u8>, r_offset: u64, r_type: u32) -> Vec<u8> {
+        data.resize(0x600, 0);
+        data[0x3c..0x3e].copy_from_slice(&4u16.to_le_bytes()); // e_shnum
+        let base = 0x1c0;
+        data[base + 0x04..base + 0x08].copy_from_slice(&SHT_RELA.to_le_bytes());
+        data[base + 0x18..base + 0x20].copy_from_slice(&0x400u64.to_le_bytes());
+        data[base + 0x20..base + 0x28].copy_from_slice(&24u64.to_le_bytes());
+        data[base + 0x28..base + 0x2c].copy_from_slice(&1u32.to_le_bytes()); // .dynsym
+        data[base + 0x38..base + 0x40].copy_from_slice(&24u64.to_le_bytes());
+
+        data[0x400..0x408].copy_from_slice(&r_offset.to_le_bytes());
+        let r_info = (1u64 << 32) | r_type as u64;
+        data[0x408..0x410].copy_from_slice(&r_info.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn parses_plt_relocation() {
+        let data = build_elf("_ZN7android21SurfaceComposerClient19setDisplayPowerModeERKNS_2spINS_7IBinderEEEi", 0x1234, 8);
+        let data = with_rela(data, 0x3f00, R_AARCH64_JUMP_SLOT);
+        let elf = Elf::parse(&data).expect("parse");
+        let relocs = elf.find_import_got("setDisplayPowerMode");
+        assert_eq!(relocs.len(), 1);
+        assert_eq!(relocs[0].offset, 0x3f00);
+        assert_eq!(relocs[0].r_type, R_AARCH64_JUMP_SLOT);
+        assert!(relocs[0].symbol.contains("setDisplayPowerMode"));
+        assert!(elf.find_import_got("setDisplayBrightness").is_empty());
+    }
+
+    #[test]
+    fn finds_glob_dat_relocation() {
+        let data = build_elf("_ZN7android21SurfaceComposerClient19setDisplayPowerModeERKNS_2spINS_7IBinderEEEi", 0x1234, 8);
+        let data = with_rela(data, 0x3f08, R_AARCH64_GLOB_DAT);
+        let elf = Elf::parse(&data).expect("parse");
+        let relocs = elf.find_import_got("setDisplayPowerMode");
+        assert_eq!(relocs.len(), 1);
+        assert_eq!(relocs[0].r_type, R_AARCH64_GLOB_DAT);
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub mod ffi;
 pub mod logging;
 pub mod modes;
 pub mod paths;
+pub mod power_hook;
 pub mod properties;
 pub mod range;
 pub mod scaling;
